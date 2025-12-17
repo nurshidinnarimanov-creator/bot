@@ -49,13 +49,14 @@ async def on_ready():
     if APPROVAL_MAP_FILE.exists():
         with APPROVAL_MAP_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-
         for msg_id, info in data.items():
-            view = MemberApprovalView(
-                approve_cid=info["approve_cid"],
-                deny_cid=info["deny_cid"]
+            bot.add_view(
+                MemberApprovalView(
+                    approve_cid=info["approve_cid"],
+                    deny_cid=info["deny_cid"]
+                ),
+                message_id=int(msg_id)
             )
-            bot.add_view(view, message_id=int(msg_id))
 
 class NewsControlView(discord.ui.View):
     def __init__(self):
@@ -63,9 +64,8 @@ class NewsControlView(discord.ui.View):
 
     @discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
     async def publish(self, interaction: discord.Interaction, _):
-        embed = interaction.message.embeds[0]
         channel = bot.get_channel(NEWS_CHANNEL_ID)
-        await channel.send(embed=embed)
+        await channel.send(embeds=interaction.message.embeds)
 
         await log_action(
             interaction.guild,
@@ -108,31 +108,42 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор но�
         max_length=4000
     )
 
-    image_link = discord.ui.TextInput(
-        label="Ссылка на изображение",
-        placeholder="https://example.com/image.png",
+    image_links = discord.ui.TextInput(
+        label="Ссылки на изображения (до 4)",
+        placeholder="https://img1.png\nhttps://img2.png",
         required=False,
-        max_length=300
+        max_length=800
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(
+        embeds = []
+
+        main_embed = discord.Embed(
             title=self.news_title.value,
             description=self.news_text.value,
             color=discord.Color.dark_red()
         )
 
         if self.author_nick.value:
-            embed.add_field(
+            main_embed.add_field(
                 name="👤 Выполнил работу",
                 value=self.author_nick.value,
                 inline=False
             )
 
-        if self.image_link.value and is_valid_url(self.image_link.value):
-            embed.set_image(url=self.image_link.value)
+        main_embed.set_footer(text="McSkill.net | News")
+        embeds.append(main_embed)
 
-        embed.set_footer(text="Новости для сообщества")
+        if self.image_links.value:
+            links = [
+                l.strip() for l in self.image_links.value.replace(",", "\n").split("\n")
+                if is_valid_url(l.strip())
+            ][:4]
+
+            for link in links:
+                img_embed = discord.Embed(color=discord.Color.dark_red())
+                img_embed.set_image(url=link)
+                embeds.append(img_embed)
 
         await log_action(
             interaction.guild,
@@ -141,7 +152,7 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор но�
         )
 
         await interaction.response.send_message(
-            embed=embed,
+            embeds=embeds,
             view=NewsControlView()
         )
 
@@ -162,7 +173,6 @@ async def news(ctx):
         await interaction.response.send_modal(NewsConstructorModal())
 
     button.callback = callback
-
     view = discord.ui.View(timeout=None)
     view.add_item(button)
 
@@ -234,6 +244,7 @@ class MemberApprovalView(discord.ui.View):
         )
 
         await member.kick(reason="Отклонён")
+
         for c in self.children:
             c.disabled = True
         await interaction.message.edit(view=self)
