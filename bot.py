@@ -11,6 +11,7 @@ NEWS_CHANNEL_ID = 1446886182913970377
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
 APPROVED_ROLE_ID = 1423344924262273157
+GUILD_ID = 1423020585881043016  # Укажите ID вашего сервера (гильдии) для быстрой синхронизации команд. Получить можно в Discord: правой кнопкой на сервере -> "Копировать ID"
 APPROVAL_MAP_FILE = Path("approval_map.json")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -37,8 +38,12 @@ async def on_ready():
     print(f"Bot is online as {bot.user}")
 
     try:
-        await bot.tree.sync()
-        print("App commands synced")
+        if GUILD_ID:
+            await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print(f"App commands synced for guild {GUILD_ID}")
+        else:
+            await bot.tree.sync()
+            print("App commands synced globally")
     except Exception as e:
         print(f"Failed to sync app commands: {e}")
 
@@ -164,6 +169,20 @@ class MemberApprovalView(discord.ui.View):
         role = interaction.guild.get_role(APPROVED_ROLE_ID)
         await member.add_roles(role)
 
+        # Отправить сообщение в канал принятых
+        accepted_channel = bot.get_channel(1446886182913970377)
+        if accepted_channel:
+            embed = discord.Embed(
+                title="🎉 Новый строитель!",
+                description=f"{member.mention} принят на роль строителя!",
+                color=discord.Color.green()
+            )
+            try:
+                embed.set_thumbnail(url=member.display_avatar.url)
+            except:
+                pass
+            await accepted_channel.send(embed=embed)
+
         for c in self.children:
             c.disabled = True
         await interaction.message.edit(view=self)
@@ -189,7 +208,11 @@ class MemberApprovalView(discord.ui.View):
 @bot.event
 async def on_member_join(member: discord.Member):
     channel = bot.get_channel(NEWS_CHANNEL_ID)
-    embed = discord.Embed(title="Новый участник", description=member.mention, color=discord.Color.gold())
+    embed = discord.Embed(title="Новый участник", description=f"{member.mention} ({member})", color=discord.Color.gold())
+    try:
+        embed.set_image(url=member.display_avatar.url)
+    except Exception:
+        pass
 
     ts = int(time.time())
     approve_cid = f"approve:{member.id}:{ts}"
