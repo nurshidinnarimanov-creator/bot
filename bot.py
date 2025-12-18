@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+import asyncio
 
 NEWS_CHANNEL_ID = 1446886182913970377
 LOG_CHANNEL_ID = 1450910208325980335
@@ -41,6 +42,29 @@ async def log_action(guild, title, description, color=discord.Color.blurple()):
     )
     await channel.send(embed=embed)
 
+async def refresh_approval_messages():
+    """Refresh approval messages every hour to keep them active."""
+    while True:
+        await asyncio.sleep(3600)  # 1 hour
+        try:
+            if not APPROVAL_MAP_FILE.exists():
+                continue
+            with APPROVAL_MAP_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            for msg_id, info in data.items():
+                try:
+                    channel = bot.get_channel(NEWS_CHANNEL_ID)
+                    if channel:
+                        message = await channel.fetch_message(int(msg_id))
+                        # Re-edit with the same embed and view to refresh
+                        await message.edit(embeds=message.embeds, view=message.view)
+                except Exception:
+                    # If message deleted or error, skip
+                    continue
+            print("Refreshed approval messages")
+        except Exception as e:
+            print(f"Error refreshing approval messages: {e}")
+
 @bot.event
 async def on_ready():
     print(f"Bot is online as {bot.user}")
@@ -57,6 +81,9 @@ async def on_ready():
                 ),
                 message_id=int(msg_id)
             )
+
+    # Start the hourly refresh task
+    bot.loop.create_task(refresh_approval_messages())
 
 class NewsControlView(discord.ui.View):
     def __init__(self):
