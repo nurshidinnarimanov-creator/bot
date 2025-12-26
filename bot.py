@@ -13,6 +13,7 @@ if not TOKEN:
 
 NEWS_CHANNEL_ID = 1446886182913970377
 LOG_CHANNEL_ID = 1450910208325980335
+
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
 APPROVED_ROLE_ID = 1423344924262273157
@@ -50,7 +51,6 @@ async def log_action(guild, title, description, color=discord.Color.blurple()):
     channel = guild.get_channel(LOG_CHANNEL_ID)
     if not channel:
         return
-
     embed = discord.Embed(
         title=title,
         description=description,
@@ -62,7 +62,6 @@ async def log_action(guild, title, description, color=discord.Color.blurple()):
 class MemberApprovalView(discord.ui.View):
     def __init__(self, approve_cid: str, deny_cid: str):
         super().__init__(timeout=None)
-
         self.approve_btn = discord.ui.Button(
             label="Подтвердить",
             style=discord.ButtonStyle.success,
@@ -73,10 +72,8 @@ class MemberApprovalView(discord.ui.View):
             style=discord.ButtonStyle.danger,
             custom_id=deny_cid
         )
-
         self.approve_btn.callback = self.approve
         self.deny_btn.callback = self.deny
-
         self.add_item(self.approve_btn)
         self.add_item(self.deny_btn)
 
@@ -94,78 +91,121 @@ class MemberApprovalView(discord.ui.View):
     async def approve(self, interaction: discord.Interaction):
         if not self._has_permission(interaction.user):
             return await interaction.response.send_message("Нет прав", ephemeral=True)
-
         data = load_approval_data()
         msg_id, info = find_approval_by_custom_id(data, interaction.data["custom_id"])
-
         if not info:
-            return await interaction.response.send_message(
-                "Заявка уже обработана", ephemeral=True
-            )
-
+            return await interaction.response.send_message("Заявка уже обработана", ephemeral=True)
         member = interaction.guild.get_member(info["member_id"])
-
         if not member:
             data.pop(msg_id, None)
             save_approval_data(data)
             await self._disable(interaction)
-            return await interaction.response.send_message(
-                "Участник уже покинул сервер", ephemeral=True
-            )
-
+            return await interaction.response.send_message("Участник уже покинул сервер", ephemeral=True)
         role = interaction.guild.get_role(APPROVED_ROLE_ID)
         if role:
             await member.add_roles(role)
-
         await log_action(
             interaction.guild,
             "Участник принят",
-            f"Модератор: {interaction.user.mention}\n"
-            f"Участник: {member.mention}",
+            f"Модератор: {interaction.user.mention}\nУчастник: {member.mention}",
             discord.Color.green()
         )
-
         data.pop(msg_id, None)
         save_approval_data(data)
-
         await self._disable(interaction)
         await interaction.response.send_message("Принят", ephemeral=True)
 
     async def deny(self, interaction: discord.Interaction):
         if not self._has_permission(interaction.user):
             return await interaction.response.send_message("Нет прав", ephemeral=True)
-
         data = load_approval_data()
         msg_id, info = find_approval_by_custom_id(data, interaction.data["custom_id"])
-
         if not info:
-            return await interaction.response.send_message(
-                "Заявка уже обработана", ephemeral=True
-            )
-
+            return await interaction.response.send_message("Заявка уже обработана", ephemeral=True)
         member = interaction.guild.get_member(info["member_id"])
-
         await log_action(
             interaction.guild,
             "Участник отклонён",
-            f"Модератор: {interaction.user.mention}\n"
-            f"ID: {info['member_id']}",
+            f"Модератор: {interaction.user.mention}\nID: {info['member_id']}",
             discord.Color.red()
         )
-
         if member:
             await member.kick(reason="Отклонён")
-
         data.pop(msg_id, None)
         save_approval_data(data)
-
         await self._disable(interaction)
+
+class NewsControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
+    async def publish(self, interaction: discord.Interaction, _):
+        channel = bot.get_channel(NEWS_CHANNEL_ID)
+        await channel.send(embeds=interaction.message.embeds)
+        await log_action(
+            interaction.guild,
+            "Опубликовано",
+            f"Пользователь: {interaction.user.mention}",
+            discord.Color.green()
+        )
+        for c in self.children:
+            c.disabled = True
+        await interaction.message.edit(view=self)
+        await interaction.response.send_message("✅ Опубликовано", ephemeral=True)
+
+    @discord.ui.button(label="Удалить", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, _):
+        await log_action(
+            interaction.guild,
+            "Удалено",
+            f"Пользователь: {interaction.user.mention}",
+            discord.Color.red()
+        )
+        await interaction.message.delete()
+
+class NewsConstructorModal(discord.ui.Modal, title="Конструктор публикации"):
+    news_title = discord.ui.TextInput(label="Заголовок", max_length=256)
+    author_nick = discord.ui.TextInput(label="Автор работы", required=False, max_length=256)
+    news_text = discord.ui.TextInput(label="Текст новости", style=discord.TextStyle.paragraph, max_length=4000)
+    image_links = discord.ui.TextInput(
+        label="Ссылки на изображения (до 4)",
+        placeholder="https://img1.png\nhttps://img2.png",
+        required=False,
+        max_length=800
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embeds = []
+        main_embed = discord.Embed(
+            title=self.news_title.value,
+            description=self.news_text.value,
+            color=discord.Color.dark_red()
+        )
+        if self.author_nick.value:
+            main_embed.add_field(name="👤 Выполнил работу", value=self.author_nick.value, inline=False)
+        main_embed.set_footer(text="Ashra_team")
+        embeds.append(main_embed)
+        if self.image_links.value:
+            links = [
+                l.strip() for l in self.image_links.value.replace(",", "\n").split("\n")
+                if is_valid_url(l.strip())
+            ][:4]
+            for link in links:
+                img_embed = discord.Embed(color=discord.Color.dark_red())
+                img_embed.set_image(url=link)
+                embeds.append(img_embed)
+        await log_action(
+            interaction.guild,
+            "Создание публикации",
+            f"Автор: {interaction.user.mention}\nЗаголовок: **{self.news_title.value}**"
+        )
+        await interaction.response.send_message(embeds=embeds, view=NewsControlView())
 
 @bot.event
 async def on_ready():
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     print(f"Бот запущен как {bot.user}")
-
     data = load_approval_data()
     for msg_id, info in data.items():
         bot.add_view(
@@ -181,19 +221,11 @@ async def on_member_join(member: discord.Member):
     channel = bot.get_channel(NEWS_CHANNEL_ID)
     if not channel:
         return
-
-    embed = discord.Embed(
-        title="Новый участник",
-        description=member.mention,
-        color=discord.Color.gold()
-    )
-
+    embed = discord.Embed(title="Новый участник", description=member.mention, color=discord.Color.gold())
     approve_cid = f"approve:{member.id}:{int(time.time())}"
     deny_cid = f"deny:{member.id}:{int(time.time())}"
-
     view = MemberApprovalView(approve_cid, deny_cid)
     message = await channel.send(embed=embed, view=view)
-
     data = load_approval_data()
     data[str(message.id)] = {
         "member_id": member.id,
@@ -201,15 +233,22 @@ async def on_member_join(member: discord.Member):
         "deny_cid": deny_cid
     }
     save_approval_data(data)
-
     bot.add_view(view, message_id=message.id)
 
 @bot.tree.command(name="news", description="Создать публикацию")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def news(interaction: discord.Interaction):
-    await interaction.response.send_message(
-        "Функция news будет добавлена позже",
-        ephemeral=True
+    embed = discord.Embed(
+        title="Конструктор публикации",
+        description="Нажмите кнопку ниже, чтобы создать публикацию",
+        color=discord.Color.blurple()
     )
+    button = discord.ui.Button(label="Создать публикацию", style=discord.ButtonStyle.primary)
+    async def callback(inter2: discord.Interaction):
+        await inter2.response.send_modal(NewsConstructorModal())
+    button.callback = callback
+    view = discord.ui.View(timeout=None)
+    view.add_item(button)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 bot.run(TOKEN)
