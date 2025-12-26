@@ -13,7 +13,6 @@ if not TOKEN:
 
 NEWS_CHANNEL_ID = 1446886182913970377
 LOG_CHANNEL_ID = 1450910208325980335
-
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
 APPROVED_ROLE_ID = 1423344924262273157
@@ -221,11 +220,20 @@ async def on_member_join(member: discord.Member):
     channel = bot.get_channel(NEWS_CHANNEL_ID)
     if not channel:
         return
-    embed = discord.Embed(title="Новый участник", description=member.mention, color=discord.Color.gold())
+
+    embed = discord.Embed(
+        title="Новый участник",
+        description=f"{member.mention}\nID: `{member.id}`",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+
     approve_cid = f"approve:{member.id}:{int(time.time())}"
     deny_cid = f"deny:{member.id}:{int(time.time())}"
+
     view = MemberApprovalView(approve_cid, deny_cid)
     message = await channel.send(embed=embed, view=view)
+
     data = load_approval_data()
     data[str(message.id)] = {
         "member_id": member.id,
@@ -235,9 +243,10 @@ async def on_member_join(member: discord.Member):
     save_approval_data(data)
     bot.add_view(view, message_id=message.id)
 
-@bot.tree.command(name="news", description="Создать публикацию")
+
+@bot.tree.command(name="panel", description="Панель управления публикациями")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
-async def news(interaction: discord.Interaction):
+async def panel(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Конструктор публикации",
         description="Нажмите кнопку ниже, чтобы создать публикацию",
