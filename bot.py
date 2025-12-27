@@ -28,6 +28,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Balance
 def load_balance():
     if not BALANCE_FILE.exists():
         return {}
@@ -47,6 +48,7 @@ def add_balance(user_id: int, amount: int):
 def get_balance(user_id: int) -> int:
     return load_balance().get(str(user_id), 0)
 
+# Utils
 def is_valid_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
@@ -87,6 +89,7 @@ async def log_action(guild, title, description, user=None, color=discord.Color.b
         embed.set_footer(text=f"{user} | ID: {user.id}", icon_url=user.display_avatar.url)
     await channel.send(embed=embed)
 
+# Member Approval
 class MemberApprovalView(discord.ui.View):
     def __init__(self, approve_cid: str, deny_cid: str):
         super().__init__(timeout=None)
@@ -159,6 +162,7 @@ class MemberApprovalView(discord.ui.View):
         save_approval_data(data)
         await self._disable(interaction)
 
+# News Control
 class NewsControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -176,7 +180,7 @@ class NewsControlView(discord.ui.View):
         await log_action(
             interaction.guild,
             "Публикация через /panel",
-            "Начислено +500 скиллов",
+            f"Начислено +500 скиллов {interaction.user.mention}",
             user=interaction.user,
             color=discord.Color.green()
         )
@@ -191,8 +195,16 @@ class NewsControlView(discord.ui.View):
     async def delete(self, interaction: discord.Interaction, _):
         if not has_mod_rights(interaction.user):
             return await interaction.response.send_message("Нет прав", ephemeral=True)
+        await log_action(
+            interaction.guild,
+            "Предпросмотр публикации удалён",
+            f"Удалил: {interaction.user.mention}",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
         await interaction.message.delete()
 
+# News Constructor Modal
 class NewsConstructorModal(discord.ui.Modal, title="Конструктор публикации"):
     news_title = discord.ui.TextInput(label="Заголовок")
     author_nick = discord.ui.TextInput(label="Кто выполнил работу", required=False)
@@ -218,11 +230,26 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор пу�
                     e.set_image(url=link)
                     embeds.append(e)
 
+        await log_action(
+            interaction.guild,
+            "Создан предпросмотр публикации",
+            f"Заголовок: {self.news_title.value}",
+            user=interaction.user
+        )
+
         await interaction.response.send_message(embeds=embeds, view=NewsControlView())
 
+# Panel command
 @bot.tree.command(name="panel", description="Панель публикаций")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def panel(interaction: discord.Interaction):
+    await log_action(
+        interaction.guild,
+        "Использована команда /panel",
+        f"Открыл панель публикаций: {interaction.user.mention}",
+        user=interaction.user
+    )
+
     embed = discord.Embed(title="Конструктор публикации", color=discord.Color.blurple())
     button = discord.ui.Button(label="Создать публикацию")
 
@@ -234,12 +261,86 @@ async def panel(interaction: discord.Interaction):
     view.add_item(button)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+# Balance command
 @bot.tree.command(name="balance", description="Ваш баланс")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def balance(interaction: discord.Interaction):
     bal = get_balance(interaction.user.id)
+    await log_action(
+        interaction.guild,
+        "Проверка баланса",
+        f"{interaction.user.mention} проверил баланс: {bal} скиллов",
+        user=interaction.user
+    )
     await interaction.response.send_message(f"💰 У вас **{bal} скиллов**", ephemeral=True)
 
+# Builders report modal
+class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"):
+    report_title = discord.ui.TextInput(label="Заголовок отчёта")
+    nick = discord.ui.TextInput(label="Ник исполнителя")
+    reward = discord.ui.TextInput(label="Заработок")
+    description = discord.ui.TextInput(label="Описание работы", style=discord.TextStyle.paragraph)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title=self.report_title.value,
+            color=discord.Color.dark_red()
+        )
+        embed.add_field(
+            name=self.nick.value,
+            value=f"Заработок: {self.reward.value}\n{self.description.value}",
+            inline=False
+        )
+        embed.set_footer(text="Ashra_team")
+
+        await log_action(
+            interaction.guild,
+            "Создан отчёт",
+            f"Исполнитель: {self.nick.value}",
+            user=interaction.user
+        )
+
+        await interaction.response.send_message(embed=embed, view=NewsControlView())
+
+# News command
+@bot.tree.command(name="news", description="Отчёт (только админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def news(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await log_action(
+            interaction.guild,
+            "Отказ в доступе",
+            f"{interaction.user.mention} пытался использовать /news",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
+        return await interaction.response.send_message("Нет доступа", ephemeral=True)
+
+    embed = discord.Embed(
+        title="Отчёт по работе",
+        description="Создать отчёт",
+        color=discord.Color.blurple()
+    )
+
+    button = discord.ui.Button(label="Создать отчёт")
+
+    async def cb(i: discord.Interaction):
+        await i.response.send_modal(BuildersReportModal())
+
+    button.callback = cb
+    view = discord.ui.View()
+    view.add_item(button)
+
+    await log_action(
+        interaction.guild,
+        "Использована команда /news",
+        f"{interaction.user.mention} открыл панель создания отчёта",
+        user=interaction.user
+    )
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+# Bot ready
 @bot.event
 async def on_ready():
     await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
