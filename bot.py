@@ -223,11 +223,14 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор пу�
 
 
 class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"):
-    title = discord.ui.TextInput(label="Заголовок отчёта")
+    report_title = discord.ui.TextInput(label="Заголовок отчёта")
 
     nick1 = discord.ui.TextInput(label="Ник (1)")
     reward1 = discord.ui.TextInput(label="Заработок (1)")
-    desc1 = discord.ui.TextInput(label="Описание (1)", style=discord.TextStyle.paragraph)
+    desc1 = discord.ui.TextInput(
+        label="Описание (1)",
+        style=discord.TextStyle.paragraph
+    )
 
     nick2 = discord.ui.TextInput(label="Ник (2)", required=False)
     reward2 = discord.ui.TextInput(label="Заработок (2)", required=False)
@@ -239,7 +242,7 @@ class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"
 
     async def on_submit(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title=self.title.value,
+            title=self.report_title.value,
             color=discord.Color.dark_red()
         )
 
@@ -262,7 +265,8 @@ class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"
             embed=embed,
             view=NewsControlView()
         )
-
+#title: Discord Bot for Member Approval and News Management 
+# бот для того чтобы одобрять новых участников и управлять новостями на сервере Discord 
 
 @bot.event
 async def on_ready():
