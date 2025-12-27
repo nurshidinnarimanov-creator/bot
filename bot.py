@@ -225,19 +225,12 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор пу�
 class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"):
     report_title = discord.ui.TextInput(label="Заголовок отчёта")
 
-    nick1 = discord.ui.TextInput(label="Ник (1)")
-    reward1 = discord.ui.TextInput(label="Заработок (1)")
-    desc1 = discord.ui.TextInput(
-        label="Описание (1)",
-        style=discord.TextStyle.paragraph
-    )
-
-    nick2 = discord.ui.TextInput(label="Ник (2)", required=False)
-    reward2 = discord.ui.TextInput(label="Заработок (2)", required=False)
-    desc2 = discord.ui.TextInput(
-        label="Описание (2)",
-        required=False,
-        style=discord.TextStyle.paragraph
+    nick = discord.ui.TextInput(label="Ник исполнителя")
+    reward = discord.ui.TextInput(label="Заработок")
+    description = discord.ui.TextInput(
+        label="Описание работы",
+        style=discord.TextStyle.paragraph,
+        max_length=1500
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -247,17 +240,10 @@ class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"
         )
 
         embed.add_field(
-            name=f"1️⃣ {self.nick1.value}",
-            value=f"Заработок: {self.reward1.value}\n{self.desc1.value}",
+            name=self.nick.value,
+            value=f"Заработок: {self.reward.value}\n{self.description.value}",
             inline=False
         )
-
-        if self.nick2.value:
-            embed.add_field(
-                name=f"2️⃣ {self.nick2.value}",
-                value=f"Заработок: {self.reward2.value}\n{self.desc2.value}",
-                inline=False
-            )
 
         embed.set_footer(text="Ashra_team")
 
@@ -265,8 +251,7 @@ class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"
             embed=embed,
             view=NewsControlView()
         )
-#title: Discord Bot for Member Approval and News Management 
-# бот для того чтобы одобрять новых участников и управлять новостями на сервере Discord 
+
 
 @bot.event
 async def on_ready():
