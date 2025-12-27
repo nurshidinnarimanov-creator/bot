@@ -193,13 +193,11 @@ class NewsControlView(discord.ui.View):
         super().__init__(timeout=None)
         self.author_id = author_id
 
-    @discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
-    async def publish(self, interaction: discord.Interaction, _):
-        if not has_mod_rights(interaction.user):
-            return await interaction.response.send_message("Нет прав", ephemeral=True)
+@discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
+async def publish(self, interaction: discord.Interaction, _):
+    channel = bot.get_channel(NEWS_CHANNEL_ID)
+    await channel.send(embeds=interaction.message.embeds)
 
-        channel = bot.get_channel(NEWS_CHANNEL_ID)
-        await channel.send(embeds=interaction.message.embeds)
 
         add_balance(self.author_id, 500)
 
