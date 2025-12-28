@@ -199,7 +199,7 @@ async def publish(self, interaction: discord.Interaction, _):
     await channel.send(embeds=interaction.message.embeds)
 
 
-        add_balance(self.author_id, 500)
+        add_balance(interaction.user.id, 500)
 
         await log_action(
             interaction.guild,
