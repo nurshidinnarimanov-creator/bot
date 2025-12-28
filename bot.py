@@ -198,7 +198,6 @@ async def publish(self, interaction: discord.Interaction, _):
     channel = bot.get_channel(NEWS_CHANNEL_ID)
     await channel.send(embeds=interaction.message.embeds)
 
-
         add_balance(interaction.user.id, 500)
 
         await log_action(
