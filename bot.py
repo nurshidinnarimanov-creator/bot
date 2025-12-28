@@ -189,44 +189,42 @@ class MemberApprovalView(discord.ui.View):
 # ================== NEWS CONTROL ==================
 
 class NewsControlView(discord.ui.View):
-    def __init__(self, author_id: int):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.author_id = author_id
 
-@discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
-async def publish(self, interaction: discord.Interaction, _):
-    channel = bot.get_channel(NEWS_CHANNEL_ID)
-    await channel.send(embeds=interaction.message.embeds)
+    @discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
+    async def publish(self, interaction: discord.Interaction, _):
+        channel = bot.get_channel(NEWS_CHANNEL_ID)
+        await channel.send(embeds=interaction.message.embeds)
 
         add_balance(interaction.user.id, 500)
 
         await log_action(
             interaction.guild,
             "Публикация через /panel",
-            f"Автор: <@{self.author_id}>\nОпубликовал: {interaction.user.mention}\n+500 скиллов",
+            f"Начислено +500 скиллов {interaction.user.mention}",
             user=interaction.user,
             color=discord.Color.green()
         )
 
-        for c in self.children:
-            c.disabled = True
+        for item in self.children:
+            item.disabled = True
 
         await interaction.message.edit(view=self)
-        await interaction.response.send_message("Опубликовано", ephemeral=True)
+        await interaction.response.send_message(
+            "Опубликовано (+500 скиллов)",
+            ephemeral=True
+        )
 
     @discord.ui.button(label="Удалить", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, _):
-        if not has_mod_rights(interaction.user):
-            return await interaction.response.send_message("Нет прав", ephemeral=True)
-
         await log_action(
             interaction.guild,
-            "Публикация удалена",
-            "Предпросмотр удалён",
+            "Предпросмотр публикации удалён",
+            f"Удалил: {interaction.user.mention}",
             user=interaction.user,
             color=discord.Color.red()
         )
-
         await interaction.message.delete()
 
 # ================== NEWS MODAL ==================
