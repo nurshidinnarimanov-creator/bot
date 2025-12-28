@@ -266,7 +266,7 @@ class NewsConstructorModal(discord.ui.Modal, title="Конструктор пу�
 
         await interaction.response.send_message(
             embeds=embeds,
-            view=NewsControlView(interaction.user.id)
+            view=NewsControlView()
         )
 
 # ================== COMMANDS ==================
