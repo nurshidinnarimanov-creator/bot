@@ -33,27 +33,43 @@ BALANCE_FILE = DATA_FOLDER / "balance.json"
 HISTORY_FILE = DATA_FOLDER / "history.json"
 CONFIG_FILE = DATA_FOLDER / "config.json"
 
-if not BALANCE_FILE.exists():
-    with BALANCE_FILE.open("w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False, indent=2)
+def ensure_json_file(filepath: Path):
+    """Создает JSON файл с правильной кодировкой если его нет"""
+    if not filepath.exists():
+        with filepath.open("w", encoding="utf-8") as f:
+            json.dump({}, f, ensure_ascii=False, indent=2)
 
-if not HISTORY_FILE.exists():
-    with HISTORY_FILE.open("w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False, indent=2)
-
-if not APPROVAL_MAP_FILE.exists():
-    with APPROVAL_MAP_FILE.open("w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False, indent=2)
-
-if not CONFIG_FILE.exists():
-    with CONFIG_FILE.open("w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False, indent=2)
+ensure_json_file(BALANCE_FILE)
+ensure_json_file(HISTORY_FILE)
+ensure_json_file(APPROVAL_MAP_FILE)
+ensure_json_file(CONFIG_FILE)
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+def detect_encoding(filepath: Path) -> str:
+    """Определяет кодировку файла"""
+    try:
+        with filepath.open("rb") as f:
+            raw = f.read(4)
+            
+        if raw.startswith(b'\xff\xfe\x00\x00'):
+            return 'utf-32-le'
+        elif raw.startswith(b'\x00\x00\xfe\xff'):
+            return 'utf-32-be'
+        elif raw.startswith(b'\xff\xfe'):
+            return 'utf-16-le'
+        elif raw.startswith(b'\xfe\xff'):
+            return 'utf-16-be'
+        elif raw.startswith(b'\xef\xbb\xbf'):
+            return 'utf-8-sig'
+        else:
+            return 'utf-8'
+    except:
+        return 'utf-8'
 
 def create_backup():
     try:
@@ -72,51 +88,62 @@ def create_backup():
         print(f"Ошибка при создании резервной копии: {e}")
         return False
 
-def load_balance() -> Dict[str, int]:
-    """Загружает балансы из файла"""
+def load_json_file(filepath: Path, default=None):
+    """Универсальная функция загрузки JSON файла с определением кодировки"""
+    if default is None:
+        default = {}
+    
+    if not filepath.exists():
+        return default
+    
     try:
-        with BALANCE_FILE.open("r", encoding="utf-8-sig") as f:  # Изменено с utf-8 на utf-8-sig
-            data = json.load(f)
-        return data
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {}
+        encoding = detect_encoding(filepath)
+        with filepath.open("r", encoding=encoding) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Ошибка загрузки файла {filepath.name}: {e}")
+        try:
+            with filepath.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            try:
+                with filepath.open("r", encoding="utf-8-sig") as f:
+                    return json.load(f)
+            except:
+                print(f"Не удалось загрузить файл {filepath.name}, возвращаем пустой словарь")
+                return default
+
+def save_json_file(filepath: Path, data):
+    """Универсальная функция сохранения JSON файла"""
+    try:
+        with filepath.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+        return True
+    except Exception as e:
+        print(f"Ошибка сохранения файла {filepath.name}: {e}")
+        return False
+
+def load_balance() -> Dict[str, int]:
+    return load_json_file(BALANCE_FILE, {})
 
 def save_balance(data: Dict[str, int]):
     try:
         create_backup()
-        
-        with BALANCE_FILE.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+        save_json_file(BALANCE_FILE, data)
     except Exception as e:
         print(f"Ошибка сохранения баланса: {e}")
 
 def load_history() -> Dict[str, List[Dict]]:
-    try:
-        with HISTORY_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {}
+    return load_json_file(HISTORY_FILE, {})
 
 def save_history(data: Dict[str, List[Dict]]):
-    try:
-        with HISTORY_FILE.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
-    except Exception as e:
-        print(f"Ошибка сохранения истории: {e}")
+    save_json_file(HISTORY_FILE, data)
 
 def load_approval_data():
-    try:
-        with APPROVAL_MAP_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {}
+    return load_json_file(APPROVAL_MAP_FILE, {})
 
 def save_approval_data(data: dict):
-    try:
-        with APPROVAL_MAP_FILE.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Ошибка сохранения данных принятия: {e}")
+    save_json_file(APPROVAL_MAP_FILE, data)
 
 def restore_from_backup() -> bool:
     try:
@@ -149,26 +176,38 @@ def get_data_info() -> Dict[str, any]:
         "data_size_mb": 0
     }
     
-    balance_data = load_balance()
-    info["balance_records"] = len(balance_data)
+    try:
+        balance_data = load_balance()
+        info["balance_records"] = len(balance_data)
+    except:
+        info["balance_records"] = 0
     
-    history_data = load_history()
-    total_transactions = sum(len(transactions) for transactions in history_data.values())
-    info["total_history"] = total_transactions
+    try:
+        history_data = load_history()
+        total_transactions = sum(len(transactions) for transactions in history_data.values())
+        info["total_history"] = total_transactions
+    except:
+        info["total_history"] = 0
     
-    backups = list(BACKUP_FOLDER.glob("backup_*"))
-    info["backup_count"] = len(backups)
-    if backups:
-        latest_backup = max(backups, key=os.path.getmtime)
-        info["last_backup"] = datetime.datetime.fromtimestamp(
-            os.path.getmtime(latest_backup)
-        ).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        backups = list(BACKUP_FOLDER.glob("backup_*"))
+        info["backup_count"] = len(backups)
+        if backups:
+            latest_backup = max(backups, key=os.path.getmtime)
+            info["last_backup"] = datetime.datetime.fromtimestamp(
+                os.path.getmtime(latest_backup)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        info["backup_count"] = 0
     
-    total_size = 0
-    for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
-        if file.exists():
-            total_size += file.stat().st_size
-    info["data_size_mb"] = round(total_size / (1024 * 1024), 2)
+    try:
+        total_size = 0
+        for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
+            if file.exists():
+                total_size += file.stat().st_size
+        info["data_size_mb"] = round(total_size / (1024 * 1024), 2)
+    except:
+        info["data_size_mb"] = 0
     
     return info
 
@@ -1279,19 +1318,22 @@ async def rate_build(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
-    if not list(BACKUP_FOLDER.glob("backup_*")):
-        print("Создаем начальную резервную копию...")
-        create_backup()
-    
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    print(f"Бот запущен как {bot.user}")
-    
-    info = get_data_info()
-    print(f"Загружено записей баланса: {info['balance_records']}")
-    print(f"Всего транзакций: {info['total_history']}")
-    print(f"Резервных копий: {info['backup_count']}")
-    print(f"Путь к данным: {DATA_FOLDER.absolute()}")
-    
-    bot.add_view(MemberApprovalView("approve_temp", "deny_temp"))
+    try:
+        if not list(BACKUP_FOLDER.glob("backup_*")):
+            print("Создаем начальную резервную копию...")
+            create_backup()
+        
+        await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"Бот запущен как {bot.user}")
+        
+        info = get_data_info()
+        print(f"Загружено записей баланса: {info['balance_records']}")
+        print(f"Всего транзакций: {info['total_history']}")
+        print(f"Резервных копий: {info['backup_count']}")
+        print(f"Путь к данным: {DATA_FOLDER.absolute()}")
+        
+        bot.add_view(MemberApprovalView("approve_temp", "deny_temp"))
+    except Exception as e:
+        print(f"Ошибка в on_ready: {e}")
 
 bot.run(TOKEN)
