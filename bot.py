@@ -20,7 +20,9 @@ LOG_CHANNEL_ID = 1450910208325980335
 APPROVAL_CHANNEL_ID = 1424167988571017326
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
-APPROVED_ROLE_ID = 1423344924262273157
+SECOND_MOD_ROLE_ID = 1454381506934865986  # Новая роль для подтверждения
+BUILDER_ROLE_ID = 1423344924262273157     # Роль строителей
+APPROVED_ROLE_ID = 1423344924262273157    # Та же роль что и выше
 
 DATA_FOLDER = Path("data")
 BACKUP_FOLDER = Path("backups")
@@ -34,7 +36,6 @@ HISTORY_FILE = DATA_FOLDER / "history.json"
 CONFIG_FILE = DATA_FOLDER / "config.json"
 
 def fix_json_file_encoding(filepath: Path):
-    """Исправляет кодировку JSON файла если он поврежден"""
     if not filepath.exists():
         with filepath.open("w", encoding="utf-8") as f:
             json.dump({}, f, ensure_ascii=False, indent=2)
@@ -96,7 +97,6 @@ def create_backup():
         return False
 
 def load_json_file_safe(filepath: Path, default=None):
-    """Безопасная загрузка JSON файла с обработкой любых кодировок"""
     if default is None:
         default = {}
     
@@ -125,7 +125,6 @@ def load_json_file_safe(filepath: Path, default=None):
             return default
 
 def save_json_file_safe(filepath: Path, data):
-    """Безопасное сохранение JSON файла в UTF-8 без BOM"""
     try:
         with filepath.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -285,8 +284,12 @@ def is_admin(member: discord.Member) -> bool:
 def has_mod_rights(member: discord.Member) -> bool:
     return (
         member.id == ADMIN_USER_ID or
-        any(role.id == MOD_ROLE_ID for role in member.roles)
+        any(role.id == MOD_ROLE_ID for role in member.roles) or
+        any(role.id == SECOND_MOD_ROLE_ID for role in member.roles)
     )
+
+def has_builder_rights(member: discord.Member) -> bool:
+    return any(role.id == BUILDER_ROLE_ID for role in member.roles)
 
 async def log_action(
     guild: discord.Guild,
@@ -741,7 +744,7 @@ async def execute_give(interaction: discord.Interaction,
             color = discord.Color.orange()
         else:
             title = "ℹ️ Информация о балансе"
-            color = discord.Color.blue()
+            color =discord.Color.blue()
         
         notify_embed = discord.Embed(
             title=title,
@@ -1307,7 +1310,7 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
 @bot.tree.command(name="rate_build", description="Оценить постройку")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def rate_build(interaction: discord.Interaction):
-    if not has_mod_rights(interaction.user):
+    if not has_builder_rights(interaction.user):
         await log_action(
             interaction.guild,
             "Отказ в доступе",
@@ -1315,7 +1318,7 @@ async def rate_build(interaction: discord.Interaction):
             user=interaction.user,
             color=discord.Color.red()
         )
-        return await interaction.response.send_message("❌ Только для модераторов", ephemeral=True)
+        return await interaction.response.send_message("❌ Только для строителей", ephemeral=True)
     
     await interaction.response.send_modal(BuildRatingModal())
 
