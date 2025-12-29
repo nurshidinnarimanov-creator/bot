@@ -20,9 +20,9 @@ LOG_CHANNEL_ID = 1450910208325980335
 APPROVAL_CHANNEL_ID = 1424167988571017326
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
-SECOND_MOD_ROLE_ID = 1454381506934865986  # Новая роль для подтверждения
-BUILDER_ROLE_ID = 1423344924262273157     # Роль строителей
-APPROVED_ROLE_ID = 1423344924262273157    # Та же роль что и выше
+SECOND_MOD_ROLE_ID = 1454381506934865986
+BUILDER_ROLE_ID = 1423344924262273157
+APPROVED_ROLE_ID = 1423344924262273157
 
 DATA_FOLDER = Path("data")
 BACKUP_FOLDER = Path("backups")
@@ -34,6 +34,11 @@ APPROVAL_MAP_FILE = DATA_FOLDER / "approval_map.json"
 BALANCE_FILE = DATA_FOLDER / "balance.json"
 HISTORY_FILE = DATA_FOLDER / "history.json"
 CONFIG_FILE = DATA_FOLDER / "config.json"
+
+# Функция проверки админских прав
+def is_admin(user: discord.User | discord.Member) -> bool:
+    """Проверяет, является ли пользователь администратором (по ID)"""
+    return user.id == ADMIN_USER_ID
 
 def fix_json_file_encoding(filepath: Path):
     if not filepath.exists():
@@ -278,17 +283,16 @@ def is_valid_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
-def is_admin(member: discord.Member) -> bool:
-    return member.id == ADMIN_USER_ID
-
 def has_mod_rights(member: discord.Member) -> bool:
+    """Проверяет, есть ли у пользователя права модератора"""
     return (
-        member.id == ADMIN_USER_ID or
+        is_admin(member) or
         any(role.id == MOD_ROLE_ID for role in member.roles) or
         any(role.id == SECOND_MOD_ROLE_ID for role in member.roles)
     )
 
 def has_builder_rights(member: discord.Member) -> bool:
+    """Проверяет, есть ли у пользователя права строителя"""
     return any(role.id == BUILDER_ROLE_ID for role in member.roles)
 
 async def log_action(
@@ -496,7 +500,7 @@ class NewsControlView(discord.ui.View):
         
         await log_action(
             interaction.guild,
-            "Публикация через /panel",
+            "Публикация через /news",
             f"Автор публикации: {author_name_display} | Опубликовал: {interaction.user.mention}",
             user=interaction.user,
             color=discord.Color.green()
@@ -522,171 +526,6 @@ class NewsControlView(discord.ui.View):
             color=discord.Color.red()
         )
         await interaction.message.delete()
-
-class NewsConstructorModal(discord.ui.Modal, title="Конструктор публикации"):
-    news_title = discord.ui.TextInput(label="Заголовок")
-    author_nick = discord.ui.TextInput(label="Кто выполнил работу", required=False)
-    news_text = discord.ui.TextInput(label="Текст", style=discord.TextStyle.paragraph)
-    image_links = discord.ui.TextInput(label="Ссылки на изображения", required=False)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        embeds = []
-
-        main = discord.Embed(
-            title=self.news_title.value,
-            description=self.news_text.value,
-            color=discord.Color.dark_red()
-        )
-
-        author_member = None
-        author_name = ""
-        
-        if self.author_nick.value:
-            for member in interaction.guild.members:
-                if (self.author_nick.value.lower() in member.display_name.lower() or 
-                    self.author_nick.value.lower() in member.name.lower()):
-                    author_member = member
-                    author_name = member.display_name
-                    break
-            
-            if author_member:
-                main.add_field(name="Выполнил работу", value=author_member.mention, inline=False)
-            else:
-                main.add_field(name="Выполнил работу", value=self.author_nick.value, inline=False)
-                author_name = self.author_nick.value
-
-        main.set_footer(text="Ashra_team")
-        embeds.append(main)
-
-        if self.image_links.value:
-            for link in self.image_links.value.splitlines():
-                if is_valid_url(link.strip()):
-                    img = discord.Embed(color=discord.Color.dark_red())
-                    img.set_image(url=link.strip())
-                    embeds.append(img)
-
-        await log_action(
-            interaction.guild,
-            "Создан предпросмотр публикации",
-            f"Автор запроса: {interaction.user.mention}",
-            user=interaction.user
-        )
-
-        author_id = author_member.id if author_member else interaction.user.id
-        
-        await interaction.response.send_message(
-            embeds=embeds,
-            view=NewsControlView(author_id, author_name)
-        )
-
-@bot.tree.command(name="panel", description="Панель публикаций")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def panel(interaction: discord.Interaction):
-    await log_action(
-        interaction.guild,
-        "Использована команда /panel",
-        f"Пользователь: {interaction.user.mention}",
-        user=interaction.user
-    )
-
-    embed = discord.Embed(
-        title="Конструктор публикации",
-        description="Нажмите кнопку ниже",
-        color=discord.Color.blurple()
-    )
-
-    button = discord.ui.Button(label="Создать публикацию")
-
-    async def cb(i: discord.Interaction):
-        await i.response.send_modal(NewsConstructorModal())
-
-    button.callback = cb
-    view = discord.ui.View()
-    view.add_item(button)
-
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-@bot.tree.command(name="balance", description="Ваш баланс")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def balance(interaction: discord.Interaction):
-    bal = get_balance(interaction.user.id)
-    
-    embed = discord.Embed(
-        title="💰 Ваш баланс",
-        description=f"**{bal} скиллов**",
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    embed.set_footer(text=f"ID: {interaction.user.id}")
-    
-    view = discord.ui.View()
-    history_button = discord.ui.Button(
-        label="История начислений",
-        style=discord.ButtonStyle.primary,
-        emoji="📊"
-    )
-    
-    async def history_cb(i: discord.Interaction):
-        history_view = HistoryView(interaction.user.id, interaction.user.display_name)
-        history_embed = history_view.get_page_embed()
-        await i.response.send_message(embed=history_embed, view=history_view, ephemeral=True)
-        history_view.message = await i.original_response()
-    
-    history_button.callback = history_cb
-    view.add_item(history_button)
-    
-    await log_action(
-        interaction.guild,
-        "Проверка баланса",
-        f"{interaction.user.mention}: {bal} скиллов",
-        user=interaction.user
-    )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-@bot.tree.command(name="top", description="Топ участников по скилкоинам")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def top(interaction: discord.Interaction):
-    balance_data = load_balance()
-    
-    sorted_users = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
-    
-    embed = discord.Embed(
-        title="🏆 Топ участников по скилкоинам",
-        color=discord.Color.gold(),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    for i, (user_id, balance) in enumerate(sorted_users[:10], 1):
-        member = interaction.guild.get_member(int(user_id))
-        if member:
-            name = member.display_name
-            avatar = member.display_avatar.url if i <= 3 else ""
-        else:
-            name = f"Участник {user_id}"
-            avatar = ""
-        
-        medal = ""
-        if i == 1: medal = "🥇 "
-        elif i == 2: medal = "🥈 "
-        elif i == 3: medal = "🥉 "
-        
-        embed.add_field(
-            name=f"{medal}{i}. {name}",
-            value=f"**{balance}** скиллов",
-            inline=False
-        )
-        
-        if i <= 3 and avatar:
-            if i == 1:
-                embed.set_thumbnail(url=avatar)
-    
-    await log_action(
-        interaction.guild,
-        "Просмотр топа",
-        f"Пользователь: {interaction.user.mention}",
-        user=interaction.user
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def execute_give(interaction: discord.Interaction, 
                       member: discord.Member, 
@@ -744,7 +583,7 @@ async def execute_give(interaction: discord.Interaction,
             color = discord.Color.orange()
         else:
             title = "ℹ️ Информация о балансе"
-            color =discord.Color.blue()
+            color = discord.Color.blue()
         
         notify_embed = discord.Embed(
             title=title,
@@ -788,6 +627,90 @@ async def execute_give(interaction: discord.Interaction,
             color=discord.Color.red()
         )
 
+@bot.tree.command(name="balance", description="Ваш баланс")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def balance(interaction: discord.Interaction):
+    # Баланс доступен всем, но для истории добавим логирование
+    bal = get_balance(interaction.user.id)
+    
+    embed = discord.Embed(
+        title="💰 Ваш баланс",
+        description=f"**{bal} скиллов**",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.set_footer(text=f"ID: {interaction.user.id}")
+    
+    view = discord.ui.View()
+    history_button = discord.ui.Button(
+        label="История начислений",
+        style=discord.ButtonStyle.primary,
+        emoji="📊"
+    )
+    
+    async def history_cb(i: discord.Interaction):
+        history_view = HistoryView(interaction.user.id, interaction.user.display_name)
+        history_embed = history_view.get_page_embed()
+        await i.response.send_message(embed=history_embed, view=history_view, ephemeral=True)
+        history_view.message = await i.original_response()
+    
+    history_button.callback = history_cb
+    view.add_item(history_button)
+    
+    await log_action(
+        interaction.guild,
+        "Проверка баланса",
+        f"{interaction.user.mention}: {bal} скиллов",
+        user=interaction.user
+    )
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name="top", description="Топ участников по скилкоинам")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def top(interaction: discord.Interaction):
+    # Топ доступен всем
+    balance_data = load_balance()
+    
+    sorted_users = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
+    
+    embed = discord.Embed(
+        title="🏆 Топ участников по скилкоинам",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    for i, (user_id, balance) in enumerate(sorted_users[:10], 1):
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            name = member.display_name
+            avatar = member.display_avatar.url if i <= 3 else ""
+        else:
+            name = f"Участник {user_id}"
+            avatar = ""
+        
+        medal = ""
+        if i == 1: medal = "🥇 "
+        elif i == 2: medal = "🥈 "
+        elif i == 3: medal = "🥉 "
+        
+        embed.add_field(
+            name=f"{medal}{i}. {name}",
+            value=f"**{balance}** скиллов",
+            inline=False
+        )
+        
+        if i <= 3 and avatar:
+            if i == 1:
+                embed.set_thumbnail(url=avatar)
+    
+    await log_action(
+        interaction.guild,
+        "Просмотр топа",
+        f"Пользователь: {interaction.user.mention}",
+        user=interaction.user
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="give", description="Выдать скилкоины (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(
@@ -800,7 +723,8 @@ async def give(interaction: discord.Interaction,
               amount: int,
               reason: str = ""):
     
-    if interaction.user.id != ADMIN_USER_ID:
+    # Команда доступна только админу
+    if not is_admin(interaction.user):
         await log_action(
             interaction.guild,
             "Попытка несанкционированного доступа к /give",
@@ -811,13 +735,8 @@ async def give(interaction: discord.Interaction,
         
         embed = discord.Embed(
             title="❌ Отказано в доступе",
-            description="Эта команда доступна только владельцу бота.",
+            description="Эта команда доступна только администратору.",
             color=discord.Color.red()
-        )
-        embed.add_field(
-            name="Требуемый ID пользователя",
-            value=f"`{ADMIN_USER_ID}`",
-            inline=False
         )
         embed.set_footer(text=f"Ваш ID: {interaction.user.id}")
         
@@ -1131,7 +1050,7 @@ async def news(interaction: discord.Interaction):
             user=interaction.user,
             color=discord.Color.red()
         )
-        return await interaction.response.send_message("Нет доступа", ephemeral=True)
+        return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
 
     embed = discord.Embed(
         title="Отчёт по работе",
@@ -1219,7 +1138,7 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         
         async def confirm_cb(i: discord.Interaction):
             if not has_mod_rights(i.user):
-                return await i.response.send_message("❌ Только для модераторов", ephemeral=True)
+                return await i.response.send_message("Куда лезем А?", ephemeral=True)
             
             message_link = ""
             if i.channel:
@@ -1266,7 +1185,7 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         
         async def adjust_cb(i: discord.Interaction):
             if not has_mod_rights(i.user):
-                return await i.response.send_message("❌ Только для модераторов", ephemeral=True)
+                return await i.response.send_message("Руку убрал", ephemeral=True)
             
             modal = discord.ui.Modal(title="Корректировка суммы")
             modal.add_item(discord.ui.TextInput(
@@ -1321,6 +1240,56 @@ async def rate_build(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Только для строителей", ephemeral=True)
     
     await interaction.response.send_modal(BuildRatingModal())
+
+# Новая команда для админа - список всех команд
+@bot.tree.command(name="commands", description="Список всех команд (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def commands_list(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await log_action(
+            interaction.guild,
+            "Отказ в доступе",
+            "Попытка использовать /commands",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
+        return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
+    
+    embed = discord.Embed(
+        title="📋 Список команд бота",
+        description="Все доступные команды для администратора",
+        color=discord.Color.purple(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    # Команды доступные только админу
+    embed.add_field(
+        name="👑 Только для администратора",
+        value="""**/give** - Выдать скилкоины
+**/data_info** - Информация о данных
+**/news** - Отчёт по работе
+**/commands** - Этот список команд""",
+        inline=False
+    )
+    
+    # Команды для строителей
+    embed.add_field(
+        name="👷 Для строителей",
+        value="**/rate_build** - Оценить постройку",
+        inline=False
+    )
+    
+    # Команды для всех
+    embed.add_field(
+        name="👤 Для всех участников",
+        value="""**/balance** - Проверить баланс
+**/top** - Топ участников по скилкоинам""",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Администратор: {interaction.user.display_name}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
 async def on_ready():
