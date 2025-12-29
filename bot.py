@@ -478,10 +478,11 @@ class HistoryView(discord.ui.View):
             await self.message.edit(view=self)
 
 class NewsControlView(discord.ui.View):
-    def __init__(self, author_id: int, author_name: str = ""):
+    def __init__(self, author_id: int, author_name: str = "", checker_name: str = "Не назначен"):
         super().__init__(timeout=300)
         self.author_id = author_id
         self.author_name = author_name
+        self.checker_name = checker_name
         self.published = False
 
     @discord.ui.button(label="📢 Опубликовать", style=discord.ButtonStyle.success)
@@ -493,7 +494,45 @@ class NewsControlView(discord.ui.View):
         if not channel:
             return await interaction.response.send_message("Канал не найден", ephemeral=True)
         
-        await channel.send(embeds=interaction.message.embeds)
+        # Обновляем статус в эмбиде перед публикацией
+        embeds = interaction.message.embeds
+        if embeds:
+            main_embed = embeds[0]
+            fields = main_embed.fields
+            
+            # Обновляем поле статуса
+            for i, field in enumerate(fields):
+                if field.name.startswith("📊 **СТАТУС**"):
+                    # Обновляем статус на "Опубликовано"
+                    new_value = field.value.replace("🟡 **Статус:** Ожидает подтверждения", 
+                                                   "🟢 **Статус:** Опубликовано")
+                    new_value = new_value.replace("Не назначен", self.checker_name)
+                    fields[i] = discord.EmbedField(
+                        name=field.name,
+                        value=new_value,
+                        inline=field.inline
+                    )
+                    break
+            
+            # Создаем новый эмбид с обновленными полями
+            new_embed = discord.Embed(
+                title=main_embed.title,
+                description=main_embed.description,
+                color=discord.Color.green(),  # Меняем цвет на зеленый
+                timestamp=main_embed.timestamp
+            )
+            
+            # Копируем все поля
+            for field in fields:
+                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            
+            # Копируем остальные атрибуты
+            if main_embed.thumbnail:
+                new_embed.set_thumbnail(url=main_embed.thumbnail.url)
+            if main_embed.footer:
+                new_embed.set_footer(text=main_embed.footer.text, icon_url=main_embed.footer.icon_url)
+            
+            await channel.send(embed=new_embed)
         
         author = interaction.guild.get_member(self.author_id)
         author_name_display = self.author_name or (author.mention if author else str(self.author_id))
@@ -501,7 +540,7 @@ class NewsControlView(discord.ui.View):
         await log_action(
             interaction.guild,
             "Публикация через /news",
-            f"Автор публикации: {author_name_display} | Опубликовал: {interaction.user.mention}",
+            f"Автор: {author_name_display} | Проверил: {self.checker_name} | Опубликовал: {interaction.user.mention}",
             user=interaction.user,
             color=discord.Color.green()
         )
@@ -512,7 +551,7 @@ class NewsControlView(discord.ui.View):
         
         await interaction.message.edit(view=self)
         await interaction.response.send_message(
-            f"✅ Опубликовано! Автор: {author_name_display}",
+            f"✅ Опубликовано!\nАвтор: {author_name_display}\nПроверил: {self.checker_name}",
             ephemeral=True
         )
 
@@ -526,6 +565,96 @@ class NewsControlView(discord.ui.View):
             color=discord.Color.red()
         )
         await interaction.message.delete()
+    
+    @discord.ui.button(label="👨‍💼 Указать проверяющего", style=discord.ButtonStyle.primary)
+    async def set_checker(self, interaction: discord.Interaction, _):
+        """Позволяет указать проверяющего перед публикацией"""
+        if not has_mod_rights(interaction.user):
+            return await interaction.response.send_message("❌ Только модераторы могут указывать проверяющего", ephemeral=True)
+        
+        # Создаем модальное окно для ввода проверяющего
+        modal = discord.ui.Modal(title="Указать проверяющего")
+        
+        checker_input = discord.ui.TextInput(
+            label="👨‍💼 Проверяющий",
+            placeholder="Введите ник или упоминание проверяющего",
+            default=self.checker_name if self.checker_name != "Не назначен" else "",
+            required=True,
+            max_length=100
+        )
+        
+        modal.add_item(checker_input)
+        
+        async def modal_submit(modal_interaction: discord.Interaction):
+            new_checker = checker_input.value.strip()
+            if not new_checker:
+                return await modal_interaction.response.send_message("❌ Имя проверяющего не может быть пустым", ephemeral=True)
+            
+            # Обновляем имя проверяющего
+            self.checker_name = new_checker
+            
+            # Обновляем эмбид
+            embeds = interaction.message.embeds
+            if embeds:
+                main_embed = embeds[0]
+                fields = main_embed.fields
+                
+                # Обновляем поле статуса
+                for i, field in enumerate(fields):
+                    if field.name.startswith("📊 **СТАТУС**"):
+                        # Обновляем проверяющего
+                        if "Проверяющий:" in field.value:
+                            lines = field.value.split('\n')
+                            for j, line in enumerate(lines):
+                                if "Проверяющий:" in line:
+                                    lines[j] = f"👨‍💼 **Проверяющий:** {new_checker}"
+                                    break
+                            new_value = '\n'.join(lines)
+                        else:
+                            # Добавляем проверяющего если его нет
+                            new_value = field.value.replace(
+                                "👨‍💼 **Проверяющий:** Не назначен",
+                                f"👨‍💼 **Проверяющий:** {new_checker}"
+                            )
+                        
+                        fields[i] = discord.EmbedField(
+                            name=field.name,
+                            value=new_value,
+                            inline=field.inline
+                        )
+                        break
+                
+                # Создаем новый эмбид
+                new_embed = discord.Embed(
+                    title=main_embed.title,
+                    description=main_embed.description,
+                    color=main_embed.color,
+                    timestamp=main_embed.timestamp
+                )
+                
+                # Копируем все поля
+                for field in fields:
+                    new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+                
+                # Копируем остальные атрибуты
+                if main_embed.thumbnail:
+                    new_embed.set_thumbnail(url=main_embed.thumbnail.url)
+                if main_embed.footer:
+                    new_embed.set_footer(text=main_embed.footer.text, icon_url=main_embed.footer.icon_url)
+                
+                # Отправляем обновленное сообщение
+                await modal_interaction.response.edit_message(embeds=[new_embed])
+                
+                await log_action(
+                    interaction.guild,
+                    "Обновлен проверяющий в отчёте",
+                    f"Новый проверяющий: {new_checker} | Установил: {modal_interaction.user.mention}",
+                    user=modal_interaction.user,
+                    color=discord.Color.blue()
+                )
+        
+        modal.on_submit = modal_submit
+        await interaction.response.send_modal(modal)
 
 async def execute_give(interaction: discord.Interaction, 
                       member: discord.Member, 
@@ -1010,6 +1139,12 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
         style=discord.TextStyle.paragraph,
         placeholder="Опишите выполненную работу, детали, сложности и результаты..."
     )
+    checker = discord.ui.TextInput(
+        label="👨‍💼 Проверяющий (необязательно)",
+        placeholder="Введите ник проверяющего",
+        required=False,
+        max_length=100
+    )
     
     async def on_submit(self, interaction: discord.Interaction):
         # Создаем красивый эмбит
@@ -1032,6 +1167,9 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
                 author_member = member
                 author_name = member.display_name
                 break
+        
+        # Определяем проверяющего
+        checker_name = self.checker.value.strip() if self.checker.value.strip() else "Не назначен"
         
         # Добавляем информацию об исполнителе в красивом формате
         if author_member:
@@ -1067,9 +1205,9 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
             inline=False
         )
         
-        # Добавляем статус
+        # Добавляем статус с проверяющим
         status_info = "🟡 **Статус:** Ожидает подтверждения\n"
-        status_info += f"👨‍💼 **Проверяющий:** Не назначен\n"
+        status_info += f"👨‍💼 **Проверяющий:** {checker_name}\n"
         status_info += f"📊 **Категория:** Отчёт по работе"
         
         main_embed.add_field(
@@ -1094,14 +1232,14 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
         await log_action(
             interaction.guild,
             "Создан отчёт по работе",
-            f"Исполнитель: {self.nick.value} | Награда: {self.reward.value}",
+            f"Исполнитель: {self.nick.value} | Награда: {self.reward.value} | Проверяющий: {checker_name}",
             user=interaction.user
         )
 
         # Отправляем с кнопками управления
         await interaction.response.send_message(
             embed=main_embed, 
-            view=NewsControlView(author_id, author_name)
+            view=NewsControlView(author_id, author_name, checker_name)
         )
 
 @bot.tree.command(name="news", description="📰 Создать отчёт по работе (админ)")
@@ -1132,6 +1270,7 @@ async def news(interaction: discord.Interaction):
         "✅ **Заполнение формы** - удобный конструктор отчётов",
         "✅ **Указание исполнителя** - по нику или упоминанию",
         "✅ **Детальное описание** - с поддержкой форматирования",
+        "✅ **Указание проверяющего** - можно указать при создании или позже",
         "✅ **Предпросмотр** - перед публикацией",
         "✅ **Безопасность** - только для администраторов"
     ]
@@ -1145,14 +1284,22 @@ async def news(interaction: discord.Interaction):
     # Добавляем инструкции
     instructions = [
         "1. Нажмите кнопку **'Создать отчёт'** ниже",
-        "2. Заполните все поля формы",
+        "2. Заполните все поля формы (проверяющего можно указать позже)",
         "3. Проверьте предпросмотр отчёта",
-        "4. Опубликуйте в новостном канале"
+        "4. При необходимости укажите/измените проверяющего",
+        "5. Опубликуйте в новостном канале"
     ]
     
     embed.add_field(
         name="📋 **ИНСТРУКЦИЯ**",
         value="\n".join(instructions),
+        inline=False
+    )
+    
+    # Добавляем информацию о проверяющем
+    embed.add_field(
+        name="👨‍💼 **ПРОВЕРЯЮЩИЙ**",
+        value="Вы можете указать проверяющего:\n• При создании отчёта в форме\n• После создания через кнопку 'Указать проверяющего'\n• Проверяющий будет отображен в публикации",
         inline=False
     )
     
@@ -1213,8 +1360,14 @@ async def news(interaction: discord.Interaction):
         )
         
         help_embed.add_field(
-            name="❓ **Как изменить отчёт перед публикацией?**",
-            value="После создания отчёта вы увидите кнопки 'Опубликовать' и 'Удалить'. Если нужно изменить - удалите и создайте заново.",
+            name="❓ **Как указать проверяющего?**",
+            value="1. При создании: заполните поле 'Проверяющий' в форме\n2. После создания: нажмите кнопку 'Указать проверяющего' в предпросмотре",
+            inline=False
+        )
+        
+        help_embed.add_field(
+            name="❓ **Кто может указать проверяющего?**",
+            value="Только модераторы и администраторы могут указывать или изменять проверяющего.",
             inline=False
         )
         
@@ -1425,7 +1578,7 @@ async def commands_list(interaction: discord.Interaction):
         name="👑 Только для администратора",
         value="""**/give** - Выдать скилкоины
 **/data_info** - Информация о данных
-**/news** - Отчёт по работе
+**/news** - Отчёт по работе (с проверяющим)
 **/commands** - Этот список команд""",
         inline=False
     )
