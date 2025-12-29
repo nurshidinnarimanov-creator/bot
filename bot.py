@@ -3,7 +3,7 @@ import json
 import time
 import datetime
 import shutil
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -498,23 +498,8 @@ class NewsControlView(discord.ui.View):
         embeds = interaction.message.embeds
         if embeds:
             main_embed = embeds[0]
-            fields = main_embed.fields
             
-            # Обновляем поле статуса
-            for i, field in enumerate(fields):
-                if field.name.startswith("📊 **СТАТУС**"):
-                    # Обновляем статус на "Опубликовано"
-                    new_value = field.value.replace("🟡 **Статус:** Ожидает подтверждения", 
-                                                   "🟢 **Статус:** Опубликовано")
-                    new_value = new_value.replace("Не назначен", self.checker_name)
-                    fields[i] = discord.EmbedField(
-                        name=field.name,
-                        value=new_value,
-                        inline=field.inline
-                    )
-                    break
-            
-            # Создаем новый эмбид с обновленными полями
+            # Создаем новый эмбид для публикации
             new_embed = discord.Embed(
                 title=main_embed.title,
                 description=main_embed.description,
@@ -522,9 +507,24 @@ class NewsControlView(discord.ui.View):
                 timestamp=main_embed.timestamp
             )
             
-            # Копируем все поля
-            for field in fields:
-                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            # Копируем поля с обновлением статуса
+            for field in main_embed.fields:
+                if field.name.startswith("📊 **СТАТУС**"):
+                    # Обновляем статус на "Опубликовано"
+                    new_value = field.value.replace("🟡 **Статус:** Ожидает подтверждения", 
+                                                   "🟢 **Статус:** Опубликовано")
+                    new_value = new_value.replace("👨‍💼 **Проверяющий:** Не назначен", 
+                                                 f"👨‍💼 **Проверяющий:** {self.checker_name}")
+                    # Заменяем проверяющего если он был "Не назначен"
+                    if "👨‍💼 **Проверяющий:**" in new_value and "Не назначен" not in new_value:
+                        # Если проверяющий уже указан, оставляем как есть
+                        pass
+                    elif "👨‍💼 **Проверяющий:**" in new_value:
+                        new_value = new_value.replace("Не назначен", self.checker_name)
+                    
+                    new_embed.add_field(name=field.name, value=new_value, inline=field.inline)
+                else:
+                    new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
             
             # Копируем остальные атрибуты
             if main_embed.thumbnail:
@@ -597,34 +597,8 @@ class NewsControlView(discord.ui.View):
             embeds = interaction.message.embeds
             if embeds:
                 main_embed = embeds[0]
-                fields = main_embed.fields
                 
-                # Обновляем поле статуса
-                for i, field in enumerate(fields):
-                    if field.name.startswith("📊 **СТАТУС**"):
-                        # Обновляем проверяющего
-                        if "Проверяющий:" in field.value:
-                            lines = field.value.split('\n')
-                            for j, line in enumerate(lines):
-                                if "Проверяющий:" in line:
-                                    lines[j] = f"👨‍💼 **Проверяющий:** {new_checker}"
-                                    break
-                            new_value = '\n'.join(lines)
-                        else:
-                            # Добавляем проверяющего если его нет
-                            new_value = field.value.replace(
-                                "👨‍💼 **Проверяющий:** Не назначен",
-                                f"👨‍💼 **Проверяющий:** {new_checker}"
-                            )
-                        
-                        fields[i] = discord.EmbedField(
-                            name=field.name,
-                            value=new_value,
-                            inline=field.inline
-                        )
-                        break
-                
-                # Создаем новый эмбид
+                # Создаем новый эмбид с обновленным проверяющим
                 new_embed = discord.Embed(
                     title=main_embed.title,
                     description=main_embed.description,
@@ -632,9 +606,32 @@ class NewsControlView(discord.ui.View):
                     timestamp=main_embed.timestamp
                 )
                 
-                # Копируем все поля
-                for field in fields:
-                    new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+                # Копируем все поля с обновлением проверяющего
+                for field in main_embed.fields:
+                    if field.name.startswith("📊 **СТАТУС**"):
+                        # Обновляем проверяющего
+                        if "👨‍💼 **Проверяющий:**" in field.value:
+                            lines = field.value.split('\n')
+                            for j, line in enumerate(lines):
+                                if "👨‍💼 **Проверяющий:**" in line:
+                                    lines[j] = f"👨‍💼 **Проверяющий:** {new_checker}"
+                                    break
+                            new_value = '\n'.join(lines)
+                        else:
+                            # Добавляем проверяющего если его нет
+                            new_value = field.value
+                            if "👨‍💼 **Проверяющий:**" not in new_value:
+                                lines = new_value.split('\n')
+                                # Добавляем проверяющего после статуса
+                                for j, line in enumerate(lines):
+                                    if "🟡 **Статус:**" in line:
+                                        lines.insert(j + 1, f"👨‍💼 **Проверяющий:** {new_checker}")
+                                        break
+                                new_value = '\n'.join(lines)
+                        
+                        new_embed.add_field(name=field.name, value=new_value, inline=field.inline)
+                    else:
+                        new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
                 
                 # Копируем остальные атрибуты
                 if main_embed.thumbnail:
@@ -883,7 +880,7 @@ async def give(interaction: discord.Interaction,
     if abs(amount) > 10000:
         embed = discord.Embed(
             title="❌ Превышен лимит",
-            description="Слишком большая сумма за одну транзакцию.",
+            description="Слишком большая сумма за одну транзакции.",
             color=discord.Color.red()
         )
         embed.add_field(name="Максимальный лимит", value="10000 скиллов", inline=True)
