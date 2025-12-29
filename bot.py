@@ -73,8 +73,9 @@ def create_backup():
         return False
 
 def load_balance() -> Dict[str, int]:
+    """Загружает балансы из файла"""
     try:
-        with BALANCE_FILE.open("r", encoding="utf-8") as f:
+        with BALANCE_FILE.open("r", encoding="utf-8-sig") as f:  # Изменено с utf-8 на utf-8-sig
             data = json.load(f)
         return data
     except (json.JSONDecodeError, FileNotFoundError):
