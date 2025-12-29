@@ -484,7 +484,7 @@ class NewsControlView(discord.ui.View):
         self.author_name = author_name
         self.published = False
 
-    @discord.ui.button(label="Опубликовать", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="📢 Опубликовать", style=discord.ButtonStyle.success)
     async def publish(self, interaction: discord.Interaction, _):
         if self.published:
             return await interaction.response.send_message("Уже опубликовано", ephemeral=True)
@@ -516,7 +516,7 @@ class NewsControlView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="Удалить", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🗑️ Удалить", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, _):
         await log_action(
             interaction.guild,
@@ -992,17 +992,40 @@ async def data_info(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"):
-    report_title = discord.ui.TextInput(label="Заголовок отчёта")
-    nick = discord.ui.TextInput(label="Ник исполнителя")
-    reward = discord.ui.TextInput(label="Заработок")
-    description = discord.ui.TextInput(label="Описание работы", style=discord.TextStyle.paragraph)
-
+class BuildersReportModal(discord.ui.Modal, title="📋 Создание отчёта по работе"):
+    report_title = discord.ui.TextInput(
+        label="📝 Заголовок отчёта",
+        placeholder="Например: Завершение строительства особняка"
+    )
+    nick = discord.ui.TextInput(
+        label="👷 Исполнитель работы",
+        placeholder="Введите ник или упоминание участника"
+    )
+    reward = discord.ui.TextInput(
+        label="💰 Заработок",
+        placeholder="Например: 500 скиллов"
+    )
+    description = discord.ui.TextInput(
+        label="📄 Подробное описание работы", 
+        style=discord.TextStyle.paragraph,
+        placeholder="Опишите выполненную работу, детали, сложности и результаты..."
+    )
+    
     async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(title=self.report_title.value, color=discord.Color.dark_red())
+        # Создаем красивый эмбит
+        main_embed = discord.Embed(
+            title=f"📰 **{self.report_title.value}**",
+            color=discord.Color.from_rgb(220, 20, 60),  # Темно-красный
+            timestamp=discord.utils.utcnow()
+        )
         
+        # Добавляем красивый баннер в шапку
+        main_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1423020585881043016/1450930000000000000/logo.png")  # Можно заменить на свой логотип
+        
+        # Находим участника по нику
         author_member = None
         author_name = self.nick.value
+        
         for member in interaction.guild.members:
             if (self.nick.value.lower() in member.display_name.lower() or 
                 self.nick.value.lower() in member.name.lower()):
@@ -1010,36 +1033,78 @@ class BuildersReportModal(discord.ui.Modal, title="Отчёт по работе"
                 author_name = member.display_name
                 break
         
+        # Добавляем информацию об исполнителе в красивом формате
         if author_member:
-            embed.add_field(
-                name=f"Исполнитель: {author_member.mention}",
-                value=f"Заработок: {self.reward.value}\n{self.description.value}",
-                inline=False
-            )
+            executor_info = f"👤 **Участник:** {author_member.mention}\n"
+            executor_info += f"🏷️ **Ник:** `{author_member.display_name}`\n"
+            executor_info += f"🆔 **ID:** `{author_member.id}`"
             author_id = author_member.id
         else:
-            embed.add_field(
-                name=f"Исполнитель: {self.nick.value}",
-                value=f"Заработок: {self.reward.value}\n{self.description.value}",
-                inline=False
-            )
+            executor_info = f"👤 **Участник:** `{self.nick.value}`"
             author_id = interaction.user.id
         
-        embed.set_footer(text="Ashra_team")
-
+        main_embed.add_field(
+            name="🎯 **ИСПОЛНИТЕЛЬ РАБОТЫ**",
+            value=executor_info,
+            inline=False
+        )
+        
+        # Добавляем информацию о заработке
+        reward_info = f"💰 **Сумма:** `{self.reward.value}`\n"
+        reward_info += f"📅 **Дата выполнения:** {datetime.datetime.now().strftime('%d.%m.%Y')}\n"
+        reward_info += f"⏰ **Время отправки:** {datetime.datetime.now().strftime('%H:%M:%S')}"
+        
+        main_embed.add_field(
+            name="💎 **НАГРАДА**",
+            value=reward_info,
+            inline=False
+        )
+        
+        # Добавляем описание работы
+        main_embed.add_field(
+            name="📋 **ОПИСАНИЕ РАБОТЫ**",
+            value=f"```\n{self.description.value}\n```",
+            inline=False
+        )
+        
+        # Добавляем статус
+        status_info = "🟡 **Статус:** Ожидает подтверждения\n"
+        status_info += f"👨‍💼 **Проверяющий:** Не назначен\n"
+        status_info += f"📊 **Категория:** Отчёт по работе"
+        
+        main_embed.add_field(
+            name="📊 **СТАТУС**",
+            value=status_info,
+            inline=False
+        )
+        
+        # Добавляем красивый футер
+        main_embed.set_footer(
+            text=f"Отчёт создан • Ashra Team",
+            icon_url="https://cdn.discordapp.com/emojis/1234567890123456789.png"  # Можно заменить на иконку
+        )
+        
+        # Добавляем декоративный разделитель
+        main_embed.add_field(
+            name="─────────────",
+            value="*Для публикации нажмите кнопку ниже*",
+            inline=False
+        )
+        
         await log_action(
             interaction.guild,
-            "Создан отчёт",
-            f"Исполнитель: {self.nick.value}",
+            "Создан отчёт по работе",
+            f"Исполнитель: {self.nick.value} | Награда: {self.reward.value}",
             user=interaction.user
         )
 
+        # Отправляем с кнопками управления
         await interaction.response.send_message(
-            embed=embed, 
+            embed=main_embed, 
             view=NewsControlView(author_id, author_name)
         )
 
-@bot.tree.command(name="news", description="Отчёт (только админ)")
+@bot.tree.command(name="news", description="📰 Создать отчёт по работе (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def news(interaction: discord.Interaction):
     if not is_admin(interaction.user):
@@ -1051,14 +1116,68 @@ async def news(interaction: discord.Interaction):
             color=discord.Color.red()
         )
         return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
-
+    
+    # Создаем красивый эмбит для меню команды /news
     embed = discord.Embed(
-        title="Отчёт по работе",
-        description="Создать отчёт",
-        color=discord.Color.blurple()
+        title="📰 **Конструктор отчётов**",
+        description="Создайте подробный отчёт о выполненной работе для публикации в новостном канале.",
+        color=discord.Color.from_rgb(220, 20, 60)
     )
-
-    button = discord.ui.Button(label="Создать отчёт")
+    
+    # Добавляем иконку
+    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1282069884620636220.png")  # Иконка новостей
+    
+    # Добавляем информацию о возможностях
+    features = [
+        "✅ **Заполнение формы** - удобный конструктор отчётов",
+        "✅ **Указание исполнителя** - по нику или упоминанию",
+        "✅ **Детальное описание** - с поддержкой форматирования",
+        "✅ **Предпросмотр** - перед публикацией",
+        "✅ **Безопасность** - только для администраторов"
+    ]
+    
+    embed.add_field(
+        name="🛠️ **ВОЗМОЖНОСТИ**",
+        value="\n".join(features),
+        inline=False
+    )
+    
+    # Добавляем инструкции
+    instructions = [
+        "1. Нажмите кнопку **'Создать отчёт'** ниже",
+        "2. Заполните все поля формы",
+        "3. Проверьте предпросмотр отчёта",
+        "4. Опубликуйте в новостном канале"
+    ]
+    
+    embed.add_field(
+        name="📋 **ИНСТРУКЦИЯ**",
+        value="\n".join(instructions),
+        inline=False
+    )
+    
+    # Добавляем информацию о доступности
+    embed.add_field(
+        name="🔒 **ДОСТУПНОСТЬ**",
+        value="Эта команда доступна только администраторам сервера.",
+        inline=False
+    )
+    
+    # Красивый футер
+    embed.set_footer(
+        text=f"Запрошено {interaction.user.display_name} • Ashra Team",
+        icon_url=interaction.user.display_avatar.url
+    )
+    
+    # Добавляем timestamp
+    embed.timestamp = discord.utils.utcnow()
+    
+    # Создаем кнопку
+    button = discord.ui.Button(
+        label="📝 Создать отчёт",
+        style=discord.ButtonStyle.primary,
+        emoji="📋"
+    )
 
     async def cb(i: discord.Interaction):
         await i.response.send_modal(BuildersReportModal())
@@ -1066,6 +1185,45 @@ async def news(interaction: discord.Interaction):
     button.callback = cb
     view = discord.ui.View()
     view.add_item(button)
+    
+    # Добавляем кнопку справки
+    help_button = discord.ui.Button(
+        label="❓ Помощь",
+        style=discord.ButtonStyle.secondary,
+        emoji="ℹ️"
+    )
+    
+    async def help_cb(i: discord.Interaction):
+        help_embed = discord.Embed(
+            title="❓ **Помощь по команде /news**",
+            description="Ответы на частые вопросы",
+            color=discord.Color.blue()
+        )
+        
+        help_embed.add_field(
+            name="❓ **Как указать исполнителя?**",
+            value="Вы можете ввести ник участника (например, `Player123`) или упомянуть его.",
+            inline=False
+        )
+        
+        help_embed.add_field(
+            name="❓ **Что писать в описании?**",
+            value="Опишите выполненную работу детально: что было сделано, какие материалы использовались, сложности и результаты.",
+            inline=False
+        )
+        
+        help_embed.add_field(
+            name="❓ **Как изменить отчёт перед публикацией?**",
+            value="После создания отчёта вы увидите кнопки 'Опубликовать' и 'Удалить'. Если нужно изменить - удалите и создайте заново.",
+            inline=False
+        )
+        
+        help_embed.set_footer(text="Ashra Team • Помощь")
+        
+        await i.response.send_message(embed=help_embed, ephemeral=True)
+    
+    help_button.callback = help_cb
+    view.add_item(help_button)
 
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
