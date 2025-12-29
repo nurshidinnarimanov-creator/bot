@@ -33,43 +33,50 @@ BALANCE_FILE = DATA_FOLDER / "balance.json"
 HISTORY_FILE = DATA_FOLDER / "history.json"
 CONFIG_FILE = DATA_FOLDER / "config.json"
 
-def ensure_json_file(filepath: Path):
-    """Создает JSON файл с правильной кодировкой если его нет"""
+def fix_json_file_encoding(filepath: Path):
+    """Исправляет кодировку JSON файла если он поврежден"""
     if not filepath.exists():
         with filepath.open("w", encoding="utf-8") as f:
             json.dump({}, f, ensure_ascii=False, indent=2)
+        return
+    
+    try:
+        content = filepath.read_text(encoding="utf-8-sig")
+        if content.strip() == "":
+            content = "{}"
+        data = json.loads(content)
+        with filepath.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except:
+        try:
+            content = filepath.read_bytes()
+            if content.startswith(b'\xff\xfe'):
+                content = content.decode('utf-16-le')
+            elif content.startswith(b'\xfe\xff'):
+                content = content.decode('utf-16-be')
+            else:
+                content = content.decode('utf-8', errors='ignore')
+            
+            if content.strip() == "":
+                content = "{}"
+            
+            data = json.loads(content)
+            with filepath.open("w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except:
+            with filepath.open("w", encoding="utf-8") as f:
+                json.dump({}, f, ensure_ascii=False, indent=2)
 
-ensure_json_file(BALANCE_FILE)
-ensure_json_file(HISTORY_FILE)
-ensure_json_file(APPROVAL_MAP_FILE)
-ensure_json_file(CONFIG_FILE)
+fix_json_file_encoding(BALANCE_FILE)
+fix_json_file_encoding(HISTORY_FILE)
+fix_json_file_encoding(APPROVAL_MAP_FILE)
+fix_json_file_encoding(CONFIG_FILE)
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-def detect_encoding(filepath: Path) -> str:
-    """Определяет кодировку файла"""
-    try:
-        with filepath.open("rb") as f:
-            raw = f.read(4)
-            
-        if raw.startswith(b'\xff\xfe\x00\x00'):
-            return 'utf-32-le'
-        elif raw.startswith(b'\x00\x00\xfe\xff'):
-            return 'utf-32-be'
-        elif raw.startswith(b'\xff\xfe'):
-            return 'utf-16-le'
-        elif raw.startswith(b'\xfe\xff'):
-            return 'utf-16-be'
-        elif raw.startswith(b'\xef\xbb\xbf'):
-            return 'utf-8-sig'
-        else:
-            return 'utf-8'
-    except:
-        return 'utf-8'
 
 def create_backup():
     try:
@@ -88,8 +95,8 @@ def create_backup():
         print(f"Ошибка при создании резервной копии: {e}")
         return False
 
-def load_json_file(filepath: Path, default=None):
-    """Универсальная функция загрузки JSON файла с определением кодировки"""
+def load_json_file_safe(filepath: Path, default=None):
+    """Безопасная загрузка JSON файла с обработкой любых кодировок"""
     if default is None:
         default = {}
     
@@ -97,24 +104,28 @@ def load_json_file(filepath: Path, default=None):
         return default
     
     try:
-        encoding = detect_encoding(filepath)
-        with filepath.open("r", encoding=encoding) as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Ошибка загрузки файла {filepath.name}: {e}")
+        content = filepath.read_text(encoding="utf-8-sig")
+        if content.strip() == "":
+            return default
+        return json.loads(content)
+    except:
         try:
-            with filepath.open("r", encoding="utf-8") as f:
-                return json.load(f)
+            content = filepath.read_bytes()
+            for encoding in ['utf-8-sig', 'utf-8', 'utf-16-le', 'utf-16-be', 'cp1251']:
+                try:
+                    decoded = content.decode(encoding)
+                    if decoded.strip() == "":
+                        return default
+                    return json.loads(decoded)
+                except:
+                    continue
+            
+            return default
         except:
-            try:
-                with filepath.open("r", encoding="utf-8-sig") as f:
-                    return json.load(f)
-            except:
-                print(f"Не удалось загрузить файл {filepath.name}, возвращаем пустой словарь")
-                return default
+            return default
 
-def save_json_file(filepath: Path, data):
-    """Универсальная функция сохранения JSON файла"""
+def save_json_file_safe(filepath: Path, data):
+    """Безопасное сохранение JSON файла в UTF-8 без BOM"""
     try:
         with filepath.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -124,26 +135,26 @@ def save_json_file(filepath: Path, data):
         return False
 
 def load_balance() -> Dict[str, int]:
-    return load_json_file(BALANCE_FILE, {})
+    return load_json_file_safe(BALANCE_FILE, {})
 
 def save_balance(data: Dict[str, int]):
     try:
         create_backup()
-        save_json_file(BALANCE_FILE, data)
+        save_json_file_safe(BALANCE_FILE, data)
     except Exception as e:
         print(f"Ошибка сохранения баланса: {e}")
 
 def load_history() -> Dict[str, List[Dict]]:
-    return load_json_file(HISTORY_FILE, {})
+    return load_json_file_safe(HISTORY_FILE, {})
 
 def save_history(data: Dict[str, List[Dict]]):
-    save_json_file(HISTORY_FILE, data)
+    save_json_file_safe(HISTORY_FILE, data)
 
 def load_approval_data():
-    return load_json_file(APPROVAL_MAP_FILE, {})
+    return load_json_file_safe(APPROVAL_MAP_FILE, {})
 
 def save_approval_data(data: dict):
-    save_json_file(APPROVAL_MAP_FILE, data)
+    save_json_file_safe(APPROVAL_MAP_FILE, data)
 
 def restore_from_backup() -> bool:
     try:
@@ -162,6 +173,10 @@ def restore_from_backup() -> bool:
             if backup_file.exists():
                 shutil.copy2(backup_file, original_file)
         
+        fix_json_file_encoding(BALANCE_FILE)
+        fix_json_file_encoding(HISTORY_FILE)
+        fix_json_file_encoding(APPROVAL_MAP_FILE)
+        
         return True
     except Exception as e:
         print(f"Ошибка восстановления из резервной копии: {e}")
@@ -176,38 +191,26 @@ def get_data_info() -> Dict[str, any]:
         "data_size_mb": 0
     }
     
-    try:
-        balance_data = load_balance()
-        info["balance_records"] = len(balance_data)
-    except:
-        info["balance_records"] = 0
+    balance_data = load_balance()
+    info["balance_records"] = len(balance_data)
     
-    try:
-        history_data = load_history()
-        total_transactions = sum(len(transactions) for transactions in history_data.values())
-        info["total_history"] = total_transactions
-    except:
-        info["total_history"] = 0
+    history_data = load_history()
+    total_transactions = sum(len(transactions) for transactions in history_data.values())
+    info["total_history"] = total_transactions
     
-    try:
-        backups = list(BACKUP_FOLDER.glob("backup_*"))
-        info["backup_count"] = len(backups)
-        if backups:
-            latest_backup = max(backups, key=os.path.getmtime)
-            info["last_backup"] = datetime.datetime.fromtimestamp(
-                os.path.getmtime(latest_backup)
-            ).strftime("%Y-%m-%d %H:%M:%S")
-    except:
-        info["backup_count"] = 0
+    backups = list(BACKUP_FOLDER.glob("backup_*"))
+    info["backup_count"] = len(backups)
+    if backups:
+        latest_backup = max(backups, key=os.path.getmtime)
+        info["last_backup"] = datetime.datetime.fromtimestamp(
+            os.path.getmtime(latest_backup)
+        ).strftime("%Y-%m-%d %H:%M:%S")
     
-    try:
-        total_size = 0
-        for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
-            if file.exists():
-                total_size += file.stat().st_size
-        info["data_size_mb"] = round(total_size / (1024 * 1024), 2)
-    except:
-        info["data_size_mb"] = 0
+    total_size = 0
+    for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
+        if file.exists():
+            total_size += file.stat().st_size
+    info["data_size_mb"] = round(total_size / (1024 * 1024), 2)
     
     return info
 
