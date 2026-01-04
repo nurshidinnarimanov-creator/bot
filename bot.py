@@ -494,30 +494,24 @@ class NewsControlView(discord.ui.View):
         if not channel:
             return await interaction.response.send_message("Канал не найден", ephemeral=True)
         
-        # Обновляем статус в эмбиде перед публикацией
         embeds = interaction.message.embeds
         if embeds:
             main_embed = embeds[0]
             
-            # Создаем новый эмбид для публикации
             new_embed = discord.Embed(
                 title=main_embed.title,
                 description=main_embed.description,
-                color=discord.Color.green(),  # Меняем цвет на зеленый
+                color=discord.Color.green(),
                 timestamp=main_embed.timestamp
             )
             
-            # Копируем поля с обновлением статуса
             for field in main_embed.fields:
                 if field.name.startswith("📊 **СТАТУС**"):
-                    # Обновляем статус на "Опубликовано"
                     new_value = field.value.replace("🟡 **Статус:** Ожидает подтверждения", 
-                                                   "🟢 **Статус:** Опубликовано")
+                                                   "🟢 **СтаУС:** Опубликовано")
                     new_value = new_value.replace("👨‍💼 **Проверяющий:** Не назначен", 
                                                  f"👨‍💼 **Проверяющий:** {self.checker_name}")
-                    # Заменяем проверяющего если он был "Не назначен"
                     if "👨‍💼 **Проверяющий:**" in new_value and "Не назначен" not in new_value:
-                        # Если проверяющий уже указан, оставляем как есть
                         pass
                     elif "👨‍💼 **Проверяющий:**" in new_value:
                         new_value = new_value.replace("Не назначен", self.checker_name)
@@ -526,7 +520,6 @@ class NewsControlView(discord.ui.View):
                 else:
                     new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
             
-            # Копируем остальные атрибуты
             if main_embed.thumbnail:
                 new_embed.set_thumbnail(url=main_embed.thumbnail.url)
             if main_embed.footer:
@@ -568,11 +561,9 @@ class NewsControlView(discord.ui.View):
     
     @discord.ui.button(label="👨‍💼 Указать проверяющего", style=discord.ButtonStyle.primary)
     async def set_checker(self, interaction: discord.Interaction, _):
-        """Позволяет указать проверяющего перед публикацией"""
         if not has_mod_rights(interaction.user):
             return await interaction.response.send_message("❌ Только модераторы могут указывать проверяющего", ephemeral=True)
         
-        # Создаем модальное окно для ввода проверяющего
         modal = discord.ui.Modal(title="Указать проверяющего")
         
         checker_input = discord.ui.TextInput(
@@ -590,15 +581,12 @@ class NewsControlView(discord.ui.View):
             if not new_checker:
                 return await modal_interaction.response.send_message("❌ Имя проверяющего не может быть пустым", ephemeral=True)
             
-            # Обновляем имя проверяющего
             self.checker_name = new_checker
             
-            # Обновляем эмбид
             embeds = interaction.message.embeds
             if embeds:
                 main_embed = embeds[0]
                 
-                # Создаем новый эмбид с обновленным проверяющим
                 new_embed = discord.Embed(
                     title=main_embed.title,
                     description=main_embed.description,
@@ -606,10 +594,8 @@ class NewsControlView(discord.ui.View):
                     timestamp=main_embed.timestamp
                 )
                 
-                # Копируем все поля с обновлением проверяющего
                 for field in main_embed.fields:
                     if field.name.startswith("📊 **СТАТУС**"):
-                        # Обновляем проверяющего
                         if "👨‍💼 **Проверяющий:**" in field.value:
                             lines = field.value.split('\n')
                             for j, line in enumerate(lines):
@@ -618,11 +604,9 @@ class NewsControlView(discord.ui.View):
                                     break
                             new_value = '\n'.join(lines)
                         else:
-                            # Добавляем проверяющего если его нет
                             new_value = field.value
                             if "👨‍💼 **Проверяющий:**" not in new_value:
                                 lines = new_value.split('\n')
-                                # Добавляем проверяющего после статуса
                                 for j, line in enumerate(lines):
                                     if "🟡 **Статус:**" in line:
                                         lines.insert(j + 1, f"👨‍💼 **Проверяющий:** {new_checker}")
@@ -633,13 +617,11 @@ class NewsControlView(discord.ui.View):
                     else:
                         new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
                 
-                # Копируем остальные атрибуты
                 if main_embed.thumbnail:
                     new_embed.set_thumbnail(url=main_embed.thumbnail.url)
                 if main_embed.footer:
                     new_embed.set_footer(text=main_embed.footer.text, icon_url=main_embed.footer.icon_url)
                 
-                # Отправляем обновленное сообщение
                 await modal_interaction.response.edit_message(embeds=[new_embed])
                 
                 await log_action(
@@ -756,7 +738,6 @@ async def execute_give(interaction: discord.Interaction,
 @bot.tree.command(name="balance", description="Ваш баланс")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def balance(interaction: discord.Interaction):
-    # Баланс доступен всем, но для истории добавим логирование
     bal = get_balance(interaction.user.id)
     
     embed = discord.Embed(
@@ -794,7 +775,6 @@ async def balance(interaction: discord.Interaction):
 @bot.tree.command(name="top", description="Топ участников по скилкоинам")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def top(interaction: discord.Interaction):
-    # Топ доступен всем
     balance_data = load_balance()
     
     sorted_users = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
@@ -849,7 +829,6 @@ async def give(interaction: discord.Interaction,
               amount: int,
               reason: str = ""):
     
-    # Команда доступна только админу
     if not is_admin(interaction.user):
         await log_action(
             interaction.guild,
@@ -868,16 +847,9 @@ async def give(interaction: discord.Interaction,
         
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    if interaction.guild.owner_id != interaction.user.id:
-        await log_action(
-            interaction.guild,
-            "Предупреждение: /give использован не владельцем сервера",
-            f"Команду использовал {interaction.user.mention} (не владелец сервера)",
-            user=interaction.user,
-            color=discord.Color.orange()
-        )
-    
-    if abs(amount) > 10000:
+    # ВАЖНОЕ ИЗМЕНЕНИЕ: У админа нет ограничения по лимитам
+    # Проверяем только для не-админов
+    if not is_admin(interaction.user) and abs(amount) > 10000:
         embed = discord.Embed(
             title="❌ Превышен лимит",
             description="Слишком большая сумма за одну транзакции.",
@@ -887,7 +859,8 @@ async def give(interaction: discord.Interaction,
         embed.add_field(name="Запрошенная сумма", value=f"{amount} скиллов", inline=True)
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    if member.id == interaction.user.id:
+    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может выдавать себе скиллоины
+    if not is_admin(interaction.user) and member.id == interaction.user.id:
         embed = discord.Embed(
             title="❌ Некорректный получатель",
             description="Нельзя выдавать скилкоины самому себе.",
@@ -910,7 +883,8 @@ async def give(interaction: discord.Interaction,
     
     current_balance = get_balance(member.id)
     
-    if abs(amount) >= 5000:
+    # ВАЖНОЕ ИЗМЕНЕНИЕ: Подтверждение только для больших сумм И не для админа
+    if not is_admin(interaction.user) and abs(amount) >= 5000:
         embed = discord.Embed(
             title="⚠️ Подтвердите действие",
             description=f"Вы собираетесь **{'выдать' if amount > 0 else 'списать'} {abs(amount)} скиллов**.",
@@ -1144,17 +1118,14 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
     )
     
     async def on_submit(self, interaction: discord.Interaction):
-        # Создаем красивый эмбит
         main_embed = discord.Embed(
             title=f"📰 **{self.report_title.value}**",
-            color=discord.Color.from_rgb(220, 20, 60),  # Темно-красный
+            color=discord.Color.from_rgb(220, 20, 60),
             timestamp=discord.utils.utcnow()
         )
         
-        # Добавляем красивый баннер в шапку
-        main_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1423020585881043016/1450930000000000000/logo.png")  # Можно заменить на свой логотип
+        main_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1423020585881043016/1450930000000000000/logo.png")
         
-        # Находим участника по нику
         author_member = None
         author_name = self.nick.value
         
@@ -1165,10 +1136,8 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
                 author_name = member.display_name
                 break
         
-        # Определяем проверяющего
         checker_name = self.checker.value.strip() if self.checker.value.strip() else "Не назначен"
         
-        # Добавляем информацию об исполнителе в красивом формате
         if author_member:
             executor_info = f"👤 **Участник:** {author_member.mention}\n"
             executor_info += f"🏷️ **Ник:** `{author_member.display_name}`\n"
@@ -1184,7 +1153,6 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
             inline=False
         )
         
-        # Добавляем информацию о заработке
         reward_info = f"💰 **Сумма:** `{self.reward.value}`\n"
         reward_info += f"📅 **Дата выполнения:** {datetime.datetime.now().strftime('%d.%m.%Y')}\n"
         reward_info += f"⏰ **Время отправки:** {datetime.datetime.now().strftime('%H:%M:%S')}"
@@ -1195,14 +1163,12 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
             inline=False
         )
         
-        # Добавляем описание работы
         main_embed.add_field(
             name="📋 **ОПИСАНИЕ РАБОТЫ**",
             value=f"```\n{self.description.value}\n```",
             inline=False
         )
         
-        # Добавляем статус с проверяющим
         status_info = "🟡 **Статус:** Ожидает подтверждения\n"
         status_info += f"👨‍💼 **Проверяющий:** {checker_name}\n"
         status_info += f"📊 **Категория:** Отчёт по работе"
@@ -1213,13 +1179,11 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
             inline=False
         )
         
-        # Добавляем красивый футер
         main_embed.set_footer(
             text=f"Отчёт создан • Ashra Team",
-            icon_url="https://cdn.discordapp.com/emojis/1234567890123456789.png"  # Можно заменить на иконку
+            icon_url="https://cdn.discordapp.com/emojis/1234567890123456789.png"
         )
         
-        # Добавляем декоративный разделитель
         main_embed.add_field(
             name="─────────────",
             value="*Для публикации нажмите кнопку ниже*",
@@ -1233,7 +1197,6 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
             user=interaction.user
         )
 
-        # Отправляем с кнопками управления
         await interaction.response.send_message(
             embed=main_embed, 
             view=NewsControlView(author_id, author_name, checker_name)
@@ -1252,17 +1215,14 @@ async def news(interaction: discord.Interaction):
         )
         return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
     
-    # Создаем красивый эмбит для меню команды /news
     embed = discord.Embed(
         title="📰 **Конструктор отчётов**",
         description="Создайте подробный отчёт о выполненной работе для публикации в новостном канале.",
         color=discord.Color.from_rgb(220, 20, 60)
     )
     
-    # Добавляем иконку
-    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1282069884620636220.png")  # Иконка новостей
+    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1282069884620636220.png")
     
-    # Добавляем информацию о возможностях
     features = [
         "✅ **Заполнение формы** - удобный конструктор отчётов",
         "✅ **Указание исполнителя** - по нику или упоминанию",
@@ -1278,7 +1238,6 @@ async def news(interaction: discord.Interaction):
         inline=False
     )
     
-    # Добавляем инструкции
     instructions = [
         "1. Нажмите кнопку **'Создать отчёт'** ниже",
         "2. Заполните все поля формы (проверяющего можно указать позже)",
@@ -1293,30 +1252,25 @@ async def news(interaction: discord.Interaction):
         inline=False
     )
     
-    # Добавляем информацию о проверяющем
     embed.add_field(
         name="👨‍💼 **ПРОВЕРЯЮЩИЙ**",
         value="Вы можете указать проверяющего:\n• При создании отчёта в форме\n• После создания через кнопку 'Указать проверяющего'\n• Проверяющий будет отображен в публикации",
         inline=False
     )
     
-    # Добавляем информацию о доступности
     embed.add_field(
         name="🔒 **ДОСТУПНОСТЬ**",
         value="Эта команда доступна только администраторам сервера.",
         inline=False
     )
     
-    # Красивый футер
     embed.set_footer(
         text=f"Запрошено {interaction.user.display_name} • Ashra Team",
         icon_url=interaction.user.display_avatar.url
     )
     
-    # Добавляем timestamp
     embed.timestamp = discord.utils.utcnow()
     
-    # Создаем кнопку
     button = discord.ui.Button(
         label="📝 Создать отчёт",
         style=discord.ButtonStyle.primary,
@@ -1330,7 +1284,6 @@ async def news(interaction: discord.Interaction):
     view = discord.ui.View()
     view.add_item(button)
     
-    # Добавляем кнопку справки
     help_button = discord.ui.Button(
         label="❓ Помощь",
         style=discord.ButtonStyle.secondary,
@@ -1445,7 +1398,8 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         )
         
         async def confirm_cb(i: discord.Interaction):
-            if not has_mod_rights(i.user):
+            # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может подтверждать без проверки прав модератора
+            if not has_mod_rights(i.user) and not is_admin(i.user):
                 return await i.response.send_message("Куда лезем А?", ephemeral=True)
             
             message_link = ""
@@ -1492,7 +1446,8 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         )
         
         async def adjust_cb(i: discord.Interaction):
-            if not has_mod_rights(i.user):
+            # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может изменять без проверки прав модератора
+            if not has_mod_rights(i.user) and not is_admin(i.user):
                 return await i.response.send_message("Руку убрал", ephemeral=True)
             
             modal = discord.ui.Modal(title="Корректировка суммы")
@@ -1504,7 +1459,8 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
             async def modal_submit(m_interaction: discord.Interaction):
                 try:
                     new_amount = int(m_interaction.data["components"][0]["components"][0]["value"])
-                    if abs(new_amount) > 5000:
+                    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может указывать любую сумму
+                    if not is_admin(m_interaction.user) and abs(new_amount) > 5000:
                         return await m_interaction.response.send_message(
                             "❌ Максимум 5000 скиллов",
                             ephemeral=True
@@ -1537,7 +1493,8 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
 @bot.tree.command(name="rate_build", description="Оценить постройку")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def rate_build(interaction: discord.Interaction):
-    if not has_builder_rights(interaction.user):
+    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ тоже может оценивать постройки
+    if not has_builder_rights(interaction.user) and not is_admin(interaction.user):
         await log_action(
             interaction.guild,
             "Отказ в доступе",
@@ -1549,7 +1506,6 @@ async def rate_build(interaction: discord.Interaction):
     
     await interaction.response.send_modal(BuildRatingModal())
 
-# Новая команда для админа - список всех команд
 @bot.tree.command(name="commands", description="Список всех команд (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def commands_list(interaction: discord.Interaction):
@@ -1570,24 +1526,21 @@ async def commands_list(interaction: discord.Interaction):
         timestamp=discord.utils.utcnow()
     )
     
-    # Команды доступные только админу
     embed.add_field(
         name="👑 Только для администратора",
-        value="""**/give** - Выдать скилкоины
+        value="""**/give** - Выдать скилкоины (без ограничений)
 **/data_info** - Информация о данных
 **/news** - Отчёт по работе (с проверяющим)
 **/commands** - Этот список команд""",
         inline=False
     )
     
-    # Команды для строителей
     embed.add_field(
-        name="👷 Для строителей",
+        name="👷 Для строителей и администратора",
         value="**/rate_build** - Оценить постройку",
         inline=False
     )
     
-    # Команды для всех
     embed.add_field(
         name="👤 Для всех участников",
         value="""**/balance** - Проверить баланс
