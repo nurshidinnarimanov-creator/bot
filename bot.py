@@ -1083,23 +1083,21 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
     builder_mention = discord.ui.TextInput(
         label="👷 Упоминание строителя",
         placeholder="Например: @FeelingZ или FeelingZ",
-        style=discord.TextStyle.short
+        style=discord.TextStyle.short,
+        max_length=100
     )
     build_description = discord.ui.TextInput(
         label="📋 Детальное описание работы", 
         style=discord.TextStyle.paragraph,
-        placeholder="""Опишите:
-• Какие элементы построены
-• Какие детали выполнены
-• Какие концепции разработаны
-• Какие ключевые зоны реализованы
-• Общий вклад строителя""",
-        max_length=2000
+        placeholder="Опишите выполненную работу... (до 2000 символов)",
+        max_length=2000,
+        required=True
     )
     earnings = discord.ui.TextInput(
         label="💰 Заработок (скиллы)",
         placeholder="Например: 15 000 скиллов",
-        style=discord.TextStyle.short
+        style=discord.TextStyle.short,
+        max_length=50
     )
     checker = discord.ui.TextInput(
         label="👨‍💼 Проверяющий (необязательно)",
@@ -1309,6 +1307,15 @@ async def news(interaction: discord.Interaction):
     embed.add_field(
         name="📋 **ИНСТРУКЦИЯ ПО СОЗДАНИЮ**",
         value="\n".join(instructions),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📝 **СОВЕТЫ ПО ЗАПОЛНЕНИЮ**",
+        value="""• **Описание работы**: Используйте маркированные списки (`•`) для наглядности
+• **Форматирование**: Разделяйте абзацы пустыми строками
+• **Подпункты**: Используйте отступы для подпунктов
+• **Ключевые моменты**: Выделяйте важные детали""",
         inline=False
     )
     
