@@ -3,6 +3,7 @@ import json
 import time
 import datetime
 import shutil
+import re
 from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord import app_commands
@@ -506,16 +507,10 @@ class NewsControlView(discord.ui.View):
             )
             
             for field in main_embed.fields:
-                if field.name.startswith("📊 **СТАТУС**"):
-                    new_value = field.value.replace("🟡 **Статус:** Ожидает подтверждения", 
-                                                   "🟢 **СтаУС:** Опубликовано")
-                    new_value = new_value.replace("👨‍💼 **Проверяющий:** Не назначен", 
-                                                 f"👨‍💼 **Проверяющий:** {self.checker_name}")
-                    if "👨‍💼 **Проверяющий:**" in new_value and "Не назначен" not in new_value:
-                        pass
-                    elif "👨‍💼 **Проверяющий:**" in new_value:
-                        new_value = new_value.replace("Не назначен", self.checker_name)
-                    
+                if field.name.startswith("🔍 **СТАТУС ПРОВЕРКИ**"):
+                    new_value = field.value
+                    if "Ожидает проверки ⏳" in new_value:
+                        new_value = new_value.replace("Ожидает проверки ⏳", "Проверено ✅")
                     new_embed.add_field(name=field.name, value=new_value, inline=field.inline)
                 else:
                     new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
@@ -544,7 +539,7 @@ class NewsControlView(discord.ui.View):
         
         await interaction.message.edit(view=self)
         await interaction.response.send_message(
-            f"✅ Опубликовано!\nАвтор: {author_name_display}\nПроверил: {self.checker_name}",
+            f"✅ Опубликовано!\nСтроитель: {author_name_display}\nПроверил: {self.checker_name}",
             ephemeral=True
         )
 
@@ -561,6 +556,7 @@ class NewsControlView(discord.ui.View):
     
     @discord.ui.button(label="👨‍💼 Указать проверяющего", style=discord.ButtonStyle.primary)
     async def set_checker(self, interaction: discord.Interaction, _):
+        """Позволяет указать проверяющего перед публикацией"""
         if not has_mod_rights(interaction.user):
             return await interaction.response.send_message("❌ Только модераторы могут указывать проверяющего", ephemeral=True)
         
@@ -595,7 +591,7 @@ class NewsControlView(discord.ui.View):
                 )
                 
                 for field in main_embed.fields:
-                    if field.name.startswith("📊 **СТАТУС**"):
+                    if field.name.startswith("🔍 **СТАТУС ПРОВЕРКИ**"):
                         if "👨‍💼 **Проверяющий:**" in field.value:
                             lines = field.value.split('\n')
                             for j, line in enumerate(lines):
@@ -603,15 +599,10 @@ class NewsControlView(discord.ui.View):
                                     lines[j] = f"👨‍💼 **Проверяющий:** {new_checker}"
                                     break
                             new_value = '\n'.join(lines)
+                            if "Не назначен" in new_value:
+                                new_value = new_value.replace("Не назначен", new_checker)
                         else:
                             new_value = field.value
-                            if "👨‍💼 **Проверяющий:**" not in new_value:
-                                lines = new_value.split('\n')
-                                for j, line in enumerate(lines):
-                                    if "🟡 **Статус:**" in line:
-                                        lines.insert(j + 1, f"👨‍💼 **Проверяющий:** {new_checker}")
-                                        break
-                                new_value = '\n'.join(lines)
                         
                         new_embed.add_field(name=field.name, value=new_value, inline=field.inline)
                     else:
@@ -847,8 +838,6 @@ async def give(interaction: discord.Interaction,
         
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    # ВАЖНОЕ ИЗМЕНЕНИЕ: У админа нет ограничения по лимитам
-    # Проверяем только для не-админов
     if not is_admin(interaction.user) and abs(amount) > 10000:
         embed = discord.Embed(
             title="❌ Превышен лимит",
@@ -859,7 +848,6 @@ async def give(interaction: discord.Interaction,
         embed.add_field(name="Запрошенная сумма", value=f"{amount} скиллов", inline=True)
         return await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может выдавать себе скиллоины
     if not is_admin(interaction.user) and member.id == interaction.user.id:
         embed = discord.Embed(
             title="❌ Некорректный получатель",
@@ -883,7 +871,6 @@ async def give(interaction: discord.Interaction,
     
     current_balance = get_balance(member.id)
     
-    # ВАЖНОЕ ИЗМЕНЕНИЕ: Подтверждение только для больших сумм И не для админа
     if not is_admin(interaction.user) and abs(amount) >= 5000:
         embed = discord.Embed(
             title="⚠️ Подтвердите действие",
@@ -1092,23 +1079,27 @@ async def data_info(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-class BuildersReportModal(discord.ui.Modal, title="📋 Создание отчёта по работе"):
-    report_title = discord.ui.TextInput(
-        label="📝 Заголовок отчёта",
-        placeholder="Например: Завершение строительства особняка"
+class BuildersReportModal(discord.ui.Modal, title="📋 Создание отчёта по работе строителей"):
+    builder_mention = discord.ui.TextInput(
+        label="👷 Упоминание строителя",
+        placeholder="Например: @FeelingZ или FeelingZ",
+        style=discord.TextStyle.short
     )
-    nick = discord.ui.TextInput(
-        label="👷 Исполнитель работы",
-        placeholder="Введите ник или упоминание участника"
-    )
-    reward = discord.ui.TextInput(
-        label="💰 Заработок",
-        placeholder="Например: 500 скиллов"
-    )
-    description = discord.ui.TextInput(
-        label="📄 Подробное описание работы", 
+    build_description = discord.ui.TextInput(
+        label="📋 Детальное описание работы", 
         style=discord.TextStyle.paragraph,
-        placeholder="Опишите выполненную работу, детали, сложности и результаты..."
+        placeholder="""Опишите:
+• Какие элементы построены
+• Какие детали выполнены
+• Какие концепции разработаны
+• Какие ключевые зоны реализованы
+• Общий вклад строителя""",
+        max_length=2000
+    )
+    earnings = discord.ui.TextInput(
+        label="💰 Заработок (скиллы)",
+        placeholder="Например: 15 000 скиллов",
+        style=discord.TextStyle.short
     )
     checker = discord.ui.TextInput(
         label="👨‍💼 Проверяющий (необязательно)",
@@ -1119,90 +1110,142 @@ class BuildersReportModal(discord.ui.Modal, title="📋 Создание отч�
     
     async def on_submit(self, interaction: discord.Interaction):
         main_embed = discord.Embed(
-            title=f"📰 **{self.report_title.value}**",
-            color=discord.Color.from_rgb(220, 20, 60),
+            title="🏗️ **ОТЧЁТ ПО РАБОТЕ СТРОИТЕЛЕЙ**",
+            color=discord.Color.from_rgb(46, 204, 113),
             timestamp=discord.utils.utcnow()
         )
         
-        main_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1423020585881043016/1450930000000000000/logo.png")
+        main_embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1280517146140344401.png?size=96")
         
-        author_member = None
-        author_name = self.nick.value
+        builder_text = self.builder_mention.value.strip()
         
-        for member in interaction.guild.members:
-            if (self.nick.value.lower() in member.display_name.lower() or 
-                self.nick.value.lower() in member.name.lower()):
-                author_member = member
-                author_name = member.display_name
-                break
+        builder_member = None
+        builder_name = builder_text
         
-        checker_name = self.checker.value.strip() if self.checker.value.strip() else "Не назначен"
-        
-        if author_member:
-            executor_info = f"👤 **Участник:** {author_member.mention}\n"
-            executor_info += f"🏷️ **Ник:** `{author_member.display_name}`\n"
-            executor_info += f"🆔 **ID:** `{author_member.id}`"
-            author_id = author_member.id
+        if "@" in builder_text:
+            match = re.search(r'<@!?(\d+)>', builder_text)
+            if match:
+                user_id = int(match.group(1))
+                builder_member = interaction.guild.get_member(user_id)
+                if builder_member:
+                    builder_name = builder_member.display_name
+                    builder_info = f"👤 **Строитель:** {builder_member.mention}\n"
+                    builder_info += f"🏷️ **Ник:** `{builder_member.display_name}`\n"
+                    builder_info += f"🆔 **ID:** `{builder_member.id}`"
+                    author_id = builder_member.id
         else:
-            executor_info = f"👤 **Участник:** `{self.nick.value}`"
+            for member in interaction.guild.members:
+                if (builder_text.lower() in member.display_name.lower() or 
+                    builder_text.lower() in member.name.lower()):
+                    builder_member = member
+                    builder_name = member.display_name
+                    builder_info = f"👤 **Строитель:** {member.mention}\n"
+                    builder_info += f"🏷️ **Ник:** `{member.display_name}`\n"
+                    builder_info += f"🆔 **ID:** `{member.id}`"
+                    author_id = member.id
+                    break
+        
+        if not builder_member:
+            builder_info = f"👤 **Строитель:** `{builder_text}`\n"
+            builder_info += f"📝 *Участник не найден на сервере*"
             author_id = interaction.user.id
         
         main_embed.add_field(
-            name="🎯 **ИСПОЛНИТЕЛЬ РАБОТЫ**",
-            value=executor_info,
+            name="🎯 **ИСПОЛНИТЕЛЬ**",
+            value=builder_info,
             inline=False
         )
         
-        reward_info = f"💰 **Сумма:** `{self.reward.value}`\n"
-        reward_info += f"📅 **Дата выполнения:** {datetime.datetime.now().strftime('%d.%m.%Y')}\n"
-        reward_info += f"⏰ **Время отправки:** {datetime.datetime.now().strftime('%H:%M:%S')}"
+        description_lines = self.build_description.value.strip().split('\n')
+        formatted_description = ""
+        
+        for line in description_lines:
+            line = line.strip()
+            if line:
+                if line.startswith(('•', '-', '*', '—')):
+                    formatted_description += f"🔸 {line.lstrip('•-*— ')}\n"
+                elif ':' in line and len(line.split(':')[0]) < 30:
+                    parts = line.split(':', 1)
+                    formatted_description += f"**{parts[0].strip()}:** {parts[1].strip()}\n"
+                else:
+                    formatted_description += f"{line}\n"
+        
+        if '🔸' in formatted_description:
+            lines = formatted_description.split('\n')
+            formatted_lines = []
+            in_list = False
+            
+            for line in lines:
+                if '🔸' in line:
+                    in_list = True
+                    formatted_lines.append(line)
+                elif line and in_list:
+                    formatted_lines.append(f"   └─ {line}")
+                else:
+                    in_list = False
+                    formatted_lines.append(line)
+            
+            formatted_description = '\n'.join(formatted_lines)
         
         main_embed.add_field(
-            name="💎 **НАГРАДА**",
-            value=reward_info,
+            name="📊 **ВЫПОЛНЕННАЯ РАБОТА**",
+            value=formatted_description or "Описание не предоставлено",
             inline=False
         )
         
+        earnings_text = f"💰 **Заработок:** `{self.earnings.value}`\n"
+        earnings_text += f"📅 **Дата выполнения:** {datetime.datetime.now().strftime('%d.%m.%Y')}\n"
+        earnings_text += f"⏰ **Время отчёта:** {datetime.datetime.now().strftime('%H:%M:%S')}\n"
+        earnings_text += f"🎯 **Статус:** Выполнено ✅"
+        
         main_embed.add_field(
-            name="📋 **ОПИСАНИЕ РАБОТЫ**",
-            value=f"```\n{self.description.value}\n```",
+            name="💎 **ФИНАНСОВЫЙ РАСЧЁТ**",
+            value=earnings_text,
             inline=False
         )
         
-        status_info = "🟡 **Статус:** Ожидает подтверждения\n"
-        status_info += f"👨‍💼 **Проверяющий:** {checker_name}\n"
-        status_info += f"📊 **Категория:** Отчёт по работе"
+        checker_name = self.checker.value.strip() if self.checker.value.strip() else "Не назначен"
+        
+        status_info = f"👨‍💼 **Проверяющий:** {checker_name}\n"
+        status_info += f"📋 **Тип отчёта:** Отчёт по строительству\n"
+        status_info += f"📊 **Статус проверки:** {'Проверено ✅' if checker_name != 'Не назначен' else 'Ожидает проверки ⏳'}"
         
         main_embed.add_field(
-            name="📊 **СТАТУС**",
+            name="🔍 **СТАТУС ПРОВЕРКИ**",
             value=status_info,
             inline=False
         )
         
+        main_embed.add_field(
+            name="\u200b",
+            value="────────────────",
+            inline=False
+        )
+        
         main_embed.set_footer(
-            text=f"Отчёт создан • Ashra Team",
-            icon_url="https://cdn.discordapp.com/emojis/1234567890123456789.png"
+            text=f"Отчёт создан {interaction.user.display_name} • Ashra Build Team",
+            icon_url=interaction.user.display_avatar.url
         )
         
         main_embed.add_field(
-            name="─────────────",
-            value="*Для публикации нажмите кнопку ниже*",
+            name="\u200b",
+            value="*Для публикации в новостном канале нажмите кнопку ниже*",
             inline=False
         )
         
         await log_action(
             interaction.guild,
-            "Создан отчёт по работе",
-            f"Исполнитель: {self.nick.value} | Награда: {self.reward.value} | Проверяющий: {checker_name}",
+            "Создан отчёт по строителям",
+            f"Строитель: {builder_text} | Заработок: {self.earnings.value} | Проверяющий: {checker_name}",
             user=interaction.user
         )
 
         await interaction.response.send_message(
             embed=main_embed, 
-            view=NewsControlView(author_id, author_name, checker_name)
+            view=NewsControlView(author_id, builder_name, checker_name)
         )
 
-@bot.tree.command(name="news", description="📰 Создать отчёт по работе (админ)")
+@bot.tree.command(name="news", description="🏗️ Создать отчёт по работе строителей (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def news(interaction: discord.Interaction):
     if not is_admin(interaction.user):
@@ -1216,38 +1259,55 @@ async def news(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
     
     embed = discord.Embed(
-        title="📰 **Конструктор отчётов**",
-        description="Создайте подробный отчёт о выполненной работе для публикации в новостном канале.",
-        color=discord.Color.from_rgb(220, 20, 60)
+        title="🏗️ **Конструктор отчётов строителей**",
+        description="Создайте подробный отчёт о работе строителя для публикации в новостном канале.",
+        color=discord.Color.from_rgb(46, 204, 113)
     )
     
-    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1282069884620636220.png")
+    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1280517146140344401.png?size=96")
     
     features = [
-        "✅ **Заполнение формы** - удобный конструктор отчётов",
-        "✅ **Указание исполнителя** - по нику или упоминанию",
-        "✅ **Детальное описание** - с поддержкой форматирования",
+        "✅ **Указание строителя** - по упоминанию или нику",
+        "✅ **Детальное описание работы** - с поддержкой форматирования",
+        "✅ **Финансовый расчёт** - указание заработка",
         "✅ **Указание проверяющего** - можно указать при создании или позже",
         "✅ **Предпросмотр** - перед публикацией",
-        "✅ **Безопасность** - только для администраторов"
+        "✅ **Профессиональный дизайн** - красивый формат отчёта"
     ]
     
     embed.add_field(
-        name="🛠️ **ВОЗМОЖНОСТИ**",
+        name="🛠️ **ВОЗМОЖНОСТИ ФОРМЫ**",
         value="\n".join(features),
+        inline=False
+    )
+    
+    example = """**Пример заполнения:**
+
+**👷 Упоминание строителя:**
+`@FeelingZ` или `FeelingZ`
+
+**📋 Описание работы:**
+
+**💰 Заработок:**
+`15 000 скиллов`"""
+    
+    embed.add_field(
+        name="📝 **ПРИМЕР ЗАПОЛНЕНИЯ**",
+        value=example,
         inline=False
     )
     
     instructions = [
         "1. Нажмите кнопку **'Создать отчёт'** ниже",
-        "2. Заполните все поля формы (проверяющего можно указать позже)",
-        "3. Проверьте предпросмотр отчёта",
-        "4. При необходимости укажите/измените проверяющего",
-        "5. Опубликуйте в новостном канале"
+        "2. Заполните все поля формы",
+        "3. Укажите строителя (можно упоминанием или ником)",
+        "4. Опишите выполненную работу детально",
+        "5. Укажите заработок в скиллах",
+        "6. Проверьте предпросмотр и опубликуйте"
     ]
     
     embed.add_field(
-        name="📋 **ИНСТРУКЦИЯ**",
+        name="📋 **ИНСТРУКЦИЯ ПО СОЗДАНИЮ**",
         value="\n".join(instructions),
         inline=False
     )
@@ -1265,15 +1325,15 @@ async def news(interaction: discord.Interaction):
     )
     
     embed.set_footer(
-        text=f"Запрошено {interaction.user.display_name} • Ashra Team",
+        text=f"Запрошено {interaction.user.display_name} • Ashra Build Team",
         icon_url=interaction.user.display_avatar.url
     )
     
     embed.timestamp = discord.utils.utcnow()
     
     button = discord.ui.Button(
-        label="📝 Создать отчёт",
-        style=discord.ButtonStyle.primary,
+        label="🏗️ Создать отчёт строителя",
+        style=discord.ButtonStyle.success,
         emoji="📋"
     )
 
@@ -1285,43 +1345,59 @@ async def news(interaction: discord.Interaction):
     view.add_item(button)
     
     help_button = discord.ui.Button(
-        label="❓ Помощь",
+        label="❓ Помощь по заполнению",
         style=discord.ButtonStyle.secondary,
         emoji="ℹ️"
     )
     
     async def help_cb(i: discord.Interaction):
         help_embed = discord.Embed(
-            title="❓ **Помощь по команде /news**",
-            description="Ответы на частые вопросы",
+            title="❓ **Помощь по заполнению отчёта строителя**",
+            description="Подробные инструкции по созданию отчёта",
             color=discord.Color.blue()
         )
         
         help_embed.add_field(
-            name="❓ **Как указать исполнителя?**",
-            value="Вы можете ввести ник участника (например, `Player123`) или упомянуть его.",
+            name="👷 **Как указать строителя?**",
+            value="Вы можете:\n1. Упомянуть участника: `@FeelingZ`\n2. Ввести ник: `FeelingZ`\n3. Ввести ID: `123456789012345678`",
             inline=False
         )
         
         help_embed.add_field(
-            name="❓ **Что писать в описании?**",
-            value="Опишите выполненную работу детально: что было сделано, какие материалы использовались, сложности и результаты.",
+            name="📋 **Что писать в описании работы?**",
+            value="""Опишите детально:
+• **Объём работы** - сколько элементов построено
+• **Детализация** - какие детали выполнены
+• **Концепции** - какие идеи разработаны
+• **Ключевые зоны** - какие области реализованы
+• **Общий вклад** - итоговая оценка работы
+
+**Совет:** Используйте маркированные списки для наглядности""",
             inline=False
         )
         
         help_embed.add_field(
-            name="❓ **Как указать проверяющего?**",
-            value="1. При создании: заполните поле 'Проверяющий' в форме\n2. После создания: нажмите кнопку 'Указать проверяющего' в предпросмотре",
+            name="💰 **Как указать заработок?**",
+            value="Укажите сумму в скиллах.\n**Примеры:**\n• `15 000 скиллов`\n• `5000 скиллов`\n• `10 000 скиллов`",
             inline=False
         )
         
         help_embed.add_field(
-            name="❓ **Кто может указать проверяющего?**",
-            value="Только модераторы и администраторы могут указывать или изменять проверяющего.",
+            name="👨‍💼 **Как указать проверяющего?**",
+            value="1. **При создании:** заполните поле 'Проверяющий' в форме\n2. **После создания:** нажмите кнопку 'Указать проверяющего' в предпросмотре\n3. Можно указать ник или упоминание",
             inline=False
         )
         
-        help_embed.set_footer(text="Ashra Team • Помощь")
+        help_embed.add_field(
+            name="🎨 **Советы по форматированию:**",
+            value="""• Используйте `•` для маркированных списков
+• Разделяйте абзацы пустыми строками
+• Для подпунктов используйте отступы
+• Выделяйте ключевые моменты""",
+            inline=False
+        )
+        
+        help_embed.set_footer(text="Ashra Build Team • Помощь по отчётам")
         
         await i.response.send_message(embed=help_embed, ephemeral=True)
     
@@ -1398,7 +1474,6 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         )
         
         async def confirm_cb(i: discord.Interaction):
-            # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может подтверждать без проверки прав модератора
             if not has_mod_rights(i.user) and not is_admin(i.user):
                 return await i.response.send_message("Куда лезем А?", ephemeral=True)
             
@@ -1446,7 +1521,6 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
         )
         
         async def adjust_cb(i: discord.Interaction):
-            # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может изменять без проверки прав модератора
             if not has_mod_rights(i.user) and not is_admin(i.user):
                 return await i.response.send_message("Руку убрал", ephemeral=True)
             
@@ -1459,7 +1533,6 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
             async def modal_submit(m_interaction: discord.Interaction):
                 try:
                     new_amount = int(m_interaction.data["components"][0]["components"][0]["value"])
-                    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ может указывать любую сумму
                     if not is_admin(m_interaction.user) and abs(new_amount) > 5000:
                         return await m_interaction.response.send_message(
                             "❌ Максимум 5000 скиллов",
@@ -1493,7 +1566,6 @@ class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"
 @bot.tree.command(name="rate_build", description="Оценить постройку")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def rate_build(interaction: discord.Interaction):
-    # ВАЖНОЕ ИЗМЕНЕНИЕ: Админ тоже может оценивать постройки
     if not has_builder_rights(interaction.user) and not is_admin(interaction.user):
         await log_action(
             interaction.guild,
@@ -1530,7 +1602,7 @@ async def commands_list(interaction: discord.Interaction):
         name="👑 Только для администратора",
         value="""**/give** - Выдать скилкоины (без ограничений)
 **/data_info** - Информация о данных
-**/news** - Отчёт по работе (с проверяющим)
+**/news** - Отчёт по работе строителей
 **/commands** - Этот список команд""",
         inline=False
     )
