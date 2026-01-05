@@ -33,6 +33,10 @@ APPROVED_ROLE_ID = 1423344924262273157  # Роль для подтвержден
 # Настройки
 APPROVAL_MESSAGE_EXPIRE_HOURS = 24  # Через сколько часов удалять сообщение об отказе
 
+# Ограничения для Discord API
+MAX_BACKUP_MESSAGES = 10  # Максимальное количество резервных копий для проверки
+MAX_WELCOME_MESSAGES = 20  # Максимальное количество сообщений для очистки
+
 # Цвета для эмбедов
 COLOR_SUCCESS = 0x00ff00  # Зеленый
 COLOR_WARNING = 0xffaa00  # Оранжевый
@@ -101,6 +105,52 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+async def safe_send_message(channel, content=None, embed=None, view=None, **kwargs):
+    """Безопасно отправляет сообщение с обработкой ошибок"""
+    try:
+        return await channel.send(content=content, embed=embed, view=view, **kwargs)
+    except discord.errors.HTTPException as e:
+        print(f"Ошибка при отправке сообщения: {e}")
+        return None
+    except Exception as e:
+        print(f"Неизвестная ошибка при отправке сообщения: {e}")
+        return None
+
+async def safe_fetch_channel(channel_id):
+    """Безопасно получает канал с обработкой ошибок"""
+    try:
+        channel = bot.get_channel(channel_id)
+        if channel:
+            return channel
+        
+        # Если канал не найден в кэше, пробуем получить через API
+        try:
+            channel = await bot.fetch_channel(channel_id)
+            return channel
+        except discord.errors.NotFound:
+            print(f"Канал с ID {channel_id} не найден")
+            return None
+        except discord.errors.Forbidden:
+            print(f"Нет доступа к каналу с ID {channel_id}")
+            return None
+    except Exception as e:
+        print(f"Ошибка при получении канала {channel_id}: {e}")
+        return None
+
+async def safe_history_fetch(channel, limit=50, delay_between_requests=0.5):
+    """Безопасно получает историю сообщений с задержкой между запросами"""
+    messages = []
+    try:
+        async for message in channel.history(limit=limit):
+            messages.append(message)
+            await asyncio.sleep(delay_between_requests)  # Задержка между запросами
+    except discord.errors.HTTPException as e:
+        print(f"Ошибка при получении истории сообщений: {e}")
+    except Exception as e:
+        print(f"Неизвестная ошибка при получении истории: {e}")
+    
+    return messages
+
 class BackupManager:
     """Менеджер резервного копирования"""
     
@@ -156,7 +206,7 @@ class BackupManager:
             compressed = base64.b64decode(encoded_data)
             
             # Распаковываем
-            json_str = zlib.depress(compressed).decode('utf-8')
+            json_str = zlib.decompress(compressed).decode('utf-8')
             
             # Парсим JSON
             payload = json.loads(json_str)
@@ -275,22 +325,28 @@ class BackupManager:
 async def create_enhanced_backup(interaction: discord.Interaction = None):
     """Создает улучшенную резервную копию"""
     try:
-        channel = bot.get_channel(BACKUP_CHANNEL_ID)
+        channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
         if not channel:
             raise Exception(f"Канал для резервных копий не найден (ID: {BACKUP_CHANNEL_ID})")
         
         # Удаляем старые резервные копии (оставляем только 10 последних)
-        messages_to_delete = []
-        async for message in channel.history(limit=50):
-            if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
-                messages_to_delete.append(message)
-        
-        if len(messages_to_delete) > 10:
-            for msg in messages_to_delete[10:]:
-                try:
-                    await msg.delete()
-                except:
-                    pass
+        try:
+            messages_to_delete = []
+            messages = await safe_history_fetch(channel, limit=50)
+            
+            for message in messages:
+                if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
+                    messages_to_delete.append(message)
+            
+            if len(messages_to_delete) > 10:
+                for msg in messages_to_delete[10:]:
+                    try:
+                        await msg.delete()
+                        await asyncio.sleep(0.5)  # Задержка между удалениями
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Ошибка при удалении старых резервных копий: {e}")
         
         # Создаем два типа резервных копий
         timestamp = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -307,7 +363,8 @@ async def create_enhanced_backup(interaction: discord.Interaction = None):
         simple_backup = BackupManager.create_simple_backup()
         
         # Отправляем основное сообщение с читаемой версией
-        backup_msg = await channel.send(
+        backup_msg = await safe_send_message(
+            channel,
             f"**📦 РЕЗЕРВНАЯ КОПИЯ SKILL БОТА**\n"
             f"```\n"
             f"ID: {backup_id}\n"
@@ -322,15 +379,20 @@ async def create_enhanced_backup(interaction: discord.Interaction = None):
             f"```\n{human_readable[:800]}...\n```"
         )
         
+        if not backup_msg:
+            raise Exception("Не удалось отправить основное сообщение резервной копии")
+        
         # Отправляем сжатую версию как ответ
         chunks = BackupManager.split_for_discord(compressed_backup)
         for i, chunk in enumerate(chunks, 1):
             await backup_msg.reply(f"**СЖАТАЯ КОПИЯ {i}/{len(chunks)}**\n```\n{chunk}\n```")
+            await asyncio.sleep(0.5)  # Задержка между отправками
         
         # Отправляем простую CSV версию
         simple_chunks = BackupManager.split_for_discord(simple_backup)
         for i, chunk in enumerate(simple_chunks, 1):
             await backup_msg.reply(f"**CSV КОПИЯ {i}/{len(simple_chunks)}**\n```\n{chunk}\n```")
+            await asyncio.sleep(0.5)  # Задержка между отправками
         
         # Сохраняем ID последней резервной копии в конфиг
         backup_config = load_json_file_safe(BACKUP_CONFIG_FILE, {})
@@ -341,33 +403,40 @@ async def create_enhanced_backup(interaction: discord.Interaction = None):
         
         # Уведомление
         if interaction:
-            embed = discord.Embed(
-                title="✅ Резервная копия создана",
-                description=f"Резервная копия успешно сохранена в канале <#{BACKUP_CHANNEL_ID}>",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-            
-            embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
-            embed.add_field(name="Backup ID", value=f"`{backup_id}`", inline=True)
-            embed.add_field(name="Типы копий", value="Сжатая + Читаемая + CSV", inline=True)
-            embed.set_footer(text="Восстановить: /restore_backup или /restore_from_text")
-            
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            try:
+                embed = discord.Embed(
+                    title="✅ Резервная копия создана",
+                    description=f"Резервная копия успешно сохранена в канале <#{BACKUP_CHANNEL_ID}>",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                
+                embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
+                embed.add_field(name="Backup ID", value=f"`{backup_id}`", inline=True)
+                embed.add_field(name="Типы копий", value="Сжатая + Читаемая + CSV", inline=True)
+                embed.set_footer(text="Восстановить: /restore_backup или /restore_from_text")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.errors.InteractionResponded:
+                # Взаимодействие уже было обработано
+                pass
         
         print(f"Резервная копия создана: {backup_msg.id} (ID: {backup_id})")
         return backup_msg.id
         
     except Exception as e:
         print(f"Ошибка при создании резервной копии: {e}")
-        if interaction:
-            await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+        if interaction and not interaction.response.is_done():
+            try:
+                await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            except:
+                pass
         return None
 
 async def restore_backup_auto(interaction: discord.Interaction = None, backup_id: str = None):
     """Автоматически восстанавливает из резервной копии"""
     try:
-        channel = bot.get_channel(BACKUP_CHANNEL_ID)
+        channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
         if not channel:
             raise Exception("Канал для резервных копий не найден")
         
@@ -376,48 +445,63 @@ async def restore_backup_auto(interaction: discord.Interaction = None, backup_id
         
         if backup_id:
             # Ищем по backup_id в сообщениях
-            async for message in channel.history(limit=100):
-                if message.author == bot.user and f"ID: {backup_id}" in message.content:
-                    backup_msg = message
-                    break
-            
-            if not backup_msg:
-                raise Exception(f"Резервная копия с ID {backup_id} не найдена")
+            try:
+                messages = await safe_history_fetch(channel, limit=MAX_BACKUP_MESSAGES)
+                for message in messages:
+                    if message.author == bot.user and f"ID: {backup_id}" in message.content:
+                        backup_msg = message
+                        break
+                
+                if not backup_msg:
+                    raise Exception(f"Резервная копия с ID {backup_id} не найдена")
+            except Exception as e:
+                raise Exception(f"Ошибка при поиске резервной копии: {e}")
         else:
             # Ищем последнюю резервную копию
-            async for message in channel.history(limit=50):
-                if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
-                    backup_msg = message
-                    break
+            try:
+                messages = await safe_history_fetch(channel, limit=MAX_BACKUP_MESSAGES)
+                for message in messages:
+                    if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
+                        backup_msg = message
+                        break
+            except Exception as e:
+                raise Exception(f"Ошибка при поиске последней резервной копии: {e}")
         
         if not backup_msg:
             raise Exception("Резервные копии не найдены")
         
         # Собираем все части сжатой резервной копии
         compressed_data = ""
-        async for reply in channel.history(limit=30):
-            if reply.reference and reply.reference.message_id == backup_msg.id:
-                content = reply.content
-                if "СЖАТАЯ КОПИЯ" in content and "```" in content:
-                    # Извлекаем данные из кодового блока
-                    try:
-                        code_block = content.split('```')[1].strip()
-                        compressed_data += code_block
-                    except:
-                        continue
+        try:
+            replies = await safe_history_fetch(channel, limit=30)
+            for reply in replies:
+                if reply.reference and reply.reference.message_id == backup_msg.id:
+                    content = reply.content
+                    if "СЖАТАЯ КОПИЯ" in content and "```" in content:
+                        try:
+                            code_block = content.split('```')[1].strip()
+                            compressed_data += code_block
+                        except:
+                            continue
+        except Exception as e:
+            print(f"Ошибка при сборе сжатых данных: {e}")
         
         if not compressed_data:
             # Пробуем найти CSV версию
             csv_data = ""
-            async for reply in channel.history(limit=30):
-                if reply.reference and reply.reference.message_id == backup_msg.id:
-                    content = reply.content
-                    if "CSV КОПИЯ" in content and "```" in content:
-                        try:
-                            code_block = content.split('```')[1].strip()
-                            csv_data += code_block + '\n'
-                        except:
-                            continue
+            try:
+                replies = await safe_history_fetch(channel, limit=30)
+                for reply in replies:
+                    if reply.reference and reply.reference.message_id == backup_msg.id:
+                        content = reply.content
+                        if "CSV КОПИЯ" in content and "```" in content:
+                            try:
+                                code_block = content.split('```')[1].strip()
+                                csv_data += code_block + '\n'
+                            except:
+                                continue
+            except Exception as e:
+                print(f"Ошибка при поиске CSV данных: {e}")
             
             if csv_data:
                 # Восстанавливаем из CSV
@@ -460,18 +544,21 @@ async def restore_backup_auto(interaction: discord.Interaction = None, backup_id
         
         # Отправляем уведомление
         if interaction:
-            embed = discord.Embed(
-                title="✅ Данные восстановлены",
-                description=f"Данные успешно восстановлены из резервной копии",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-            
-            embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
-            embed.add_field(name="Дата создания", value=payload.get("timestamp", "Неизвестно"), inline=True)
-            embed.add_field(name="Восстановлено файлов", value=str(restored_files), inline=True)
-            
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            try:
+                embed = discord.Embed(
+                    title="✅ Данные восстановлены",
+                    description=f"Данные успешно восстановлены из резервной копии",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                
+                embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
+                embed.add_field(name="Дата создания", value=payload.get("timestamp", "Неизвестно"), inline=True)
+                embed.add_field(name="Восстановлено файлов", value=str(restored_files), inline=True)
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.errors.InteractionResponded:
+                pass
         
         print(f"Автовосстановление выполнено из {backup_msg.id}")
         return True
@@ -479,7 +566,10 @@ async def restore_backup_auto(interaction: discord.Interaction = None, backup_id
     except Exception as e:
         print(f"Ошибка автовосстановления: {e}")
         if interaction:
-            await interaction.followup.send(f"❌ Ошибка автовосстановления: {str(e)}", ephemeral=True)
+            try:
+                await interaction.followup.send(f"❌ Ошибка автовосстановления: {str(e)}", ephemeral=True)
+            except:
+                pass
         return False
 
 async def restore_from_text(interaction: discord.Interaction, text_data: str):
@@ -841,7 +931,7 @@ async def on_member_join(member: discord.Member):
             return
         
         # Проверяем, существует ли канал для подтверждения
-        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        welcome_channel = await safe_fetch_channel(WELCOME_CHANNEL_ID)
         if not welcome_channel:
             print(f"Канал для подтверждения не найден (ID: {WELCOME_CHANNEL_ID})")
             return
@@ -1179,7 +1269,7 @@ async def on_member_join(member: discord.Member):
         view.add_item(timeout_button)
         
         # Отправляем сообщение в канал
-        await welcome_channel.send(embed=embed, view=view)
+        await safe_send_message(welcome_channel, embed=embed, view=view)
         
         print(f"Создана заявка для нового участника: {member.id} ({member.name})")
         
@@ -1953,7 +2043,7 @@ async def restore_backup_command(
     if message_id:
         # Восстановление по ID сообщения
         try:
-            channel = bot.get_channel(BACKUP_CHANNEL_ID)
+            channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
             if not channel:
                 raise Exception("Канал не найден")
             
@@ -1961,15 +2051,19 @@ async def restore_backup_command(
             
             # Собираем сжатые данные
             compressed_data = ""
-            async for reply in channel.history(limit=30):
-                if reply.reference and reply.reference.message_id == backup_msg.id:
-                    content = reply.content
-                    if "СЖАТАЯ КОПИЯ" in content and "```" in content:
-                        try:
-                            code_block = content.split('```')[1].strip()
-                            compressed_data += code_block
-                        except:
-                            continue
+            try:
+                replies = await safe_history_fetch(channel, limit=30)
+                for reply in replies:
+                    if reply.reference and reply.reference.message_id == backup_msg.id:
+                        content = reply.content
+                        if "СЖАТАЯ КОПИЯ" in content and "```" in content:
+                            try:
+                                code_block = content.split('```')[1].strip()
+                                compressed_data += code_block
+                            except:
+                                continue
+            except Exception as e:
+                print(f"Ошибка при сборе сжатых данных: {e}")
             
             if not compressed_data:
                 await interaction.followup.send("❌ Не найдены сжатые данные в этом сообщении", ephemeral=True)
@@ -2040,16 +2134,20 @@ async def restore_from_text_command(
     if backup_id and not text_data:
         # Извлекаем текст из резервной копии по ID
         try:
-            channel = bot.get_channel(BACKUP_CHANNEL_ID)
+            channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
             if not channel:
                 raise Exception("Канал не найден")
             
             # Ищем сообщение с указанным backup_id
             backup_msg = None
-            async for message in channel.history(limit=100):
-                if message.author == bot.user and f"ID: {backup_id}" in message.content:
-                    backup_msg = message
-                    break
+            try:
+                messages = await safe_history_fetch(channel, limit=100)
+                for message in messages:
+                    if message.author == bot.user and f"ID: {backup_id}" in message.content:
+                        backup_msg = message
+                        break
+            except Exception as e:
+                raise Exception(f"Ошибка при поиске резервной копии: {e}")
             
             if not backup_msg:
                 raise Exception(f"Резервная копия с ID {backup_id} не найдена")
@@ -2087,39 +2185,55 @@ async def backup_info_command(interaction: discord.Interaction):
         )
         return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
     
-    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
     if not channel:
-        return await interaction.response.send_message("❌ Канал не найден", ephemeral=True)
+        await interaction.followup.send("❌ Канал не найден", ephemeral=True)
+        return
     
     # Собираем информацию о резервных копиях
     backups = []
-    async for message in channel.history(limit=100):
-        if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
-            # Извлекаем backup_id из сообщения
-            backup_id = "Неизвестно"
-            if "ID:" in message.content:
-                for line in message.content.split('\n'):
-                    if "ID:" in line:
-                        parts = line.split("ID:")
-                        if len(parts) > 1:
-                            backup_id = parts[1].strip().split()[0]
-            
-            backups.append({
-                "id": message.id,
-                "backup_id": backup_id,
-                "created_at": message.created_at,
-                "has_compressed": False,
-                "has_csv": False
-            })
+    try:
+        messages = await safe_history_fetch(channel, limit=MAX_BACKUP_MESSAGES)
+        
+        for message in messages:
+            if message.author == bot.user:
+                content = message.content
+                if "Резервная копия" in content or BACKUP_SIGNATURE in content:
+                    # Извлекаем backup_id из сообщения
+                    backup_id = "Неизвестно"
+                    if "ID:" in content:
+                        for line in content.split('\n'):
+                            if "ID:" in line:
+                                parts = line.split("ID:")
+                                if len(parts) > 1:
+                                    backup_id = parts[1].strip().split()[0]
+                    
+                    backups.append({
+                        "id": message.id,
+                        "backup_id": backup_id,
+                        "created_at": message.created_at,
+                        "has_compressed": False,
+                        "has_csv": False
+                    })
+    except Exception as e:
+        print(f"Ошибка при сборе информации о резервных копиях: {e}")
+        await interaction.followup.send("❌ Ошибка при получении информации о резервных копиях", ephemeral=True)
+        return
     
     # Проверяем наличие сжатых данных для каждой копии
     for backup in backups:
-        async for reply in channel.history(limit=20):
-            if reply.reference and reply.reference.message_id == backup["id"]:
-                if "СЖАТАЯ КОПИЯ" in reply.content:
-                    backup["has_compressed"] = True
-                if "CSV КОПИЯ" in reply.content:
-                    backup["has_csv"] = True
+        try:
+            replies = await safe_history_fetch(channel, limit=20)
+            for reply in replies:
+                if reply.reference and reply.reference.message_id == backup["id"]:
+                    if "СЖАТАЯ КОПИЯ" in reply.content:
+                        backup["has_compressed"] = True
+                    if "CSV КОПИЯ" in reply.content:
+                        backup["has_csv"] = True
+        except Exception as e:
+            print(f"Ошибка при проверке данных резервной копии {backup['id']}: {e}")
     
     embed = discord.Embed(
         title="📊 Информация о резервных копиях",
@@ -2199,132 +2313,11 @@ async def backup_info_command(interaction: discord.Interaction):
     view.add_item(restore_button)
     view.add_item(list_button)
     
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-@bot.tree.command(name="data_info", description="Информация о данных (админ)")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def data_info(interaction: discord.Interaction):
-    if not is_admin(interaction.user):
-        await log_action(
-            interaction.guild,
-            "Отказ в доступе",
-            "Попытка использовать /data_info",
-            user=interaction.user,
-            color=discord.Color.red()
-        )
-        return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
-    
-    balance_data = load_balance()
-    history_data = load_history()
-    
-    total_transactions = sum(len(transactions) for transactions in history_data.values())
-    
-    # Получаем информацию о последней резервной копии
-    backup_config = load_json_file_safe(BACKUP_CONFIG_FILE, {})
-    last_backup_time = backup_config.get("last_backup_time")
-    last_backup_id = backup_config.get("last_backup_id")
-    
-    if last_backup_time:
-        last_backup_str = f"<t:{int(last_backup_time)}:R>"
-        if last_backup_id:
-            last_backup_str += f"\nID: `{last_backup_id}`"
-    else:
-        last_backup_str = "Никогда"
-    
-    embed = discord.Embed(
-        title="📊 Информация о данных",
-        color=discord.Color.blue(),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    embed.add_field(
-        name="Балансы",
-        value=f"Записей: {len(balance_data)}",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="История транзакций",
-        value=f"Всего транзакций: {total_transactions}",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="Последняя резервная копия",
-        value=last_backup_str,
-        inline=True
-    )
-    
-    # Размер данных
-    total_size = 0
-    for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
-        if file.exists():
-            total_size += file.stat().st_size
-    
-    embed.add_field(
-        name="Размер данных",
-        value=f"{round(total_size / 1024, 2)} KB",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="Канал резервных копий",
-        value=f"<#{BACKUP_CHANNEL_ID}>",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="Путь к данным",
-        value=f"`{DATA_FOLDER.absolute()}`",
-        inline=False
-    )
-    
-    view = discord.ui.View(timeout=180)
-    
-    backup_button = discord.ui.Button(
-        label="🔄 Создать резервную копию",
-        style=discord.ButtonStyle.primary,
-        custom_id="create_backup_info"
-    )
-    
-    restore_button = discord.ui.Button(
-        label="♻️ Восстановить данные",
-        style=discord.ButtonStyle.success,
-        custom_id="restore_backup_info"
-    )
-    
-    backup_info_button = discord.ui.Button(
-        label="📋 Список копий",
-        style=discord.ButtonStyle.secondary,
-        custom_id="backup_list_info"
-    )
-    
-    async def backup_callback(i: discord.Interaction):
-        if not is_admin(i.user):
-            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        await i.response.defer(ephemeral=True, thinking=True)
-        await create_enhanced_backup(i)
-    
-    async def restore_callback(i: discord.Interaction):
-        if not is_admin(i.user):
-            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        await i.response.defer(ephemeral=True, thinking=True)
-        await restore_backup_auto(i)
-    
-    async def list_callback(i: discord.Interaction):
-        if not is_admin(i.user):
-            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        await backup_info_command(i)
-    
-    backup_button.callback = backup_callback
-    restore_button.callback = restore_callback
-    backup_info_button.callback = list_callback
-    
-    view.add_item(backup_button)
-    view.add_item(restore_button)
-    view.add_item(backup_info_button)
-    
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    try:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    except Exception as e:
+        print(f"Ошибка при отправке информации о резервных копиях: {e}")
+        await interaction.followup.send("❌ Ошибка при отправке информации", ephemeral=True)
 
 # ==============================================
 # КОМАНДЫ ДЛЯ РАБОТЫ С ПОСТРОЙКАМИ
@@ -2519,9 +2512,9 @@ async def submit_build(
         view.add_item(deny_button)
         
         # Отправляем заявку в канал проверки
-        channel = bot.get_channel(APPROVAL_CHANNEL_ID)
+        channel = await safe_fetch_channel(APPROVAL_CHANNEL_ID)
         if channel:
-            await channel.send(embed=embed, view=view)
+            await safe_send_message(channel, embed=embed, view=view)
             await interaction.response.send_message(
                 "✅ Ваша постройка отправлена на проверку!",
                 ephemeral=True
@@ -2651,7 +2644,7 @@ async def help_command(interaction: discord.Interaction):
                       "• `/backup` - Создать резервную копию\n"
                       "• `/restore_backup [id]` - Восстановить из резервной копии\n"
                       "• `/backup_info` - Информация о резервных копиях\n"
-                      "• `/data_info` - Информация о данных",
+                      "• `/restore_from_text` - Восстановить из текстовой копии",
                 inline=False
             )
         
@@ -2700,7 +2693,7 @@ async def check_data_integrity():
 async def cleanup_old_approvals():
     """Очистка старых сообщений с заявками"""
     try:
-        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        welcome_channel = await safe_fetch_channel(WELCOME_CHANNEL_ID)
         if not welcome_channel:
             return
         
@@ -2709,21 +2702,28 @@ async def cleanup_old_approvals():
         messages_to_delete = []
         
         # Находим старые сообщения
-        async for message in welcome_channel.history(limit=200):
-            if message.author == bot.user:
-                if message.embeds:
-                    embed_title = message.embeds[0].title if message.embeds else ""
-                    if "Новый участник" in embed_title or "Участник" in embed_title:
-                        message_age_hours = (current_time - message.created_at.timestamp()) / 3600
-                        
-                        if message_age_hours > APPROVAL_MESSAGE_EXPIRE_HOURS:
-                            messages_to_delete.append(message)
+        try:
+            messages = await safe_history_fetch(welcome_channel, limit=MAX_WELCOME_MESSAGES)
+            
+            for message in messages:
+                if message.author == bot.user:
+                    if message.embeds:
+                        embed_title = message.embeds[0].title if message.embeds else ""
+                        if "Новый участник" in embed_title or "Участник" in embed_title:
+                            message_age_hours = (current_time - message.created_at.timestamp()) / 3600
+                            
+                            if message_age_hours > APPROVAL_MESSAGE_EXPIRE_HOURS:
+                                messages_to_delete.append(message)
+        except Exception as e:
+            print(f"Ошибка при поиске старых сообщений: {e}")
+            return
         
-        # Удаляем старые сообщения
+        # Удаляем старые сообщения с задержкой
         for message in messages_to_delete:
             try:
                 await message.delete()
                 print(f"Удалено старое сообщение с заявкой: {message.id}")
+                await asyncio.sleep(1)  # Задержка между удалениями
             except Exception as e:
                 print(f"Ошибка при удалении сообщения {message.id}: {e}")
         
