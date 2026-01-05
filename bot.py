@@ -19,7 +19,7 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN не установлен")
 
 GUILD_ID = 1423020585881043016
-BACKUP_CHANNEL_ID = 1450910208325980335  # ID канала для хранения резервных копий
+BACKUP_CHANNEL_ID = 1457768411873415190  # ID канала для хранения резервных копий
 LOG_CHANNEL_ID = 1450910208325980335
 APPROVAL_CHANNEL_ID = 1424167988571017326
 ADMIN_USER_ID = 673564170167255041
@@ -804,6 +804,18 @@ def get_history(user_id: int, limit: int = 10) -> List[Dict]:
         return []
     return history_data[uid][-limit:]
 
+def find_approval_by_custom_id(data: dict, custom_id: str):
+    """Находит заявку по custom ID"""
+    for msg_id, info in data.items():
+        if info["approve_cid"] == custom_id or info["deny_cid"] == custom_id:
+            return msg_id, info
+    return None, None
+
+def is_valid_url(url: str) -> bool:
+    """Проверяет валидность URL"""
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
 # Классы представлений для Discord
 class MemberApprovalView(discord.ui.View):
     """Представление для одобрения участников"""
@@ -819,7 +831,718 @@ class HistoryView(discord.ui.View):
         self.user_id = user_id
         self.page = page
 
-# Discord команды
+# ==============================================
+# ОСНОВНЫЕ КОМАНДЫ БОТА
+# ==============================================
+
+@bot.tree.command(name="balance", description="Показать ваш баланс скиллов")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def balance(interaction: discord.Interaction):
+    """Команда для просмотра баланса"""
+    try:
+        user_id = interaction.user.id
+        balance_amount = get_balance(user_id)
+        
+        embed = discord.Embed(
+            title=f"💰 Баланс скиллов",
+            description=f"**{interaction.user.mention}**, ваш баланс:",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Текущий баланс",
+            value=f"**{balance_amount}** скиллов",
+            inline=False
+        )
+        
+        # Получаем последние транзакции
+        history = get_history(user_id, limit=3)
+        if history:
+            history_text = ""
+            for tx in reversed(history):
+                sign = "+" if tx["amount"] > 0 else ""
+                history_text += f"• {tx['datetime']}: {sign}{tx['amount']} скиллов"
+                if tx.get('reason'):
+                    history_text += f" ({tx['reason'][:30]})"
+                history_text += "\n"
+            
+            embed.add_field(
+                name="Последние операции",
+                value=history_text or "Нет операций",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"ID: {user_id}")
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде balance: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при получении баланса",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="give", description="Передать скиллы другому участнику")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник, которому передаются скиллы",
+    amount="Количество скиллов",
+    reason="Причина передачи"
+)
+async def give(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 100000],
+    reason: str = ""
+):
+    """Команда для передачи скиллов"""
+    try:
+        # Проверка на передачу самому себе
+        if member.id == interaction.user.id:
+            await interaction.response.send_message(
+                "❌ Нельзя передавать скиллы самому себе!",
+                ephemeral=True
+            )
+            return
+        
+        # Проверка баланса отправителя
+        sender_balance = get_balance(interaction.user.id)
+        if sender_balance < amount:
+            await interaction.response.send_message(
+                f"❌ Недостаточно скиллов! Ваш баланс: {sender_balance}",
+                ephemeral=True
+            )
+            return
+        
+        # Проверка прав для больших сумм
+        if amount > 500 and not has_mod_rights(interaction.user):
+            await interaction.response.send_message(
+                "❌ Только модераторы могут передавать более 500 скиллов за раз",
+                ephemeral=True
+            )
+            return
+        
+        # Выполняем транзакцию
+        add_transaction(interaction.user.id, -amount, reason=f"Перевод для {member.name}: {reason}")
+        add_transaction(member.id, amount, reason=f"Перевод от {interaction.user.name}: {reason}")
+        
+        # Создаем embed для подтверждения
+        embed = discord.Embed(
+            title="✅ Перевод выполнен",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Отправитель",
+            value=f"{interaction.user.mention}\nБаланс: {get_balance(interaction.user.id)} (-{amount})",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Получатель",
+            value=f"{member.mention}\nБаланс: {get_balance(member.id)} (+{amount})",
+            inline=True
+        )
+        
+        if reason:
+            embed.add_field(
+                name="Причина",
+                value=reason[:200],
+                inline=False
+            )
+        
+        embed.set_footer(text=f"ID операции: {int(time.time())}")
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "Перевод скиллов",
+            f"**Отправитель:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+            f"**Получатель:** {member.mention} (`{member.id}`)\n"
+            f"**Сумма:** {amount} скиллов\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.gold()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде give: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при выполнении перевода",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="top", description="Топ участников по количеству скиллов")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    limit="Количество участников в топе (от 1 до 20)"
+)
+async def top(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 10):
+    """Команда для отображения топа участников"""
+    try:
+        await interaction.response.defer()
+        
+        balance_data = load_balance()
+        if not balance_data:
+            await interaction.followup.send("📭 Балансы участников пусты")
+            return
+        
+        # Сортируем по балансу
+        sorted_balance = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
+        
+        # Берем только нужное количество
+        top_list = sorted_balance[:limit]
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title=f"🏆 Топ {len(top_list)} участников по скиллам",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Получаем информацию об участниках
+        description_lines = []
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        for i, (user_id, balance) in enumerate(top_list):
+            try:
+                member = await interaction.guild.fetch_member(int(user_id))
+                mention = member.mention
+                name = member.display_name
+            except:
+                mention = f"`{user_id}`"
+                name = f"Участник ({user_id})"
+            
+            medal = medals[i] if i < len(medals) else f"{i+1}."
+            description_lines.append(
+                f"{medal} {mention} - **{balance}** скиллов"
+            )
+        
+        embed.description = "\n".join(description_lines)
+        
+        # Добавляем статистику
+        total_skils = sum(balance for _, balance in top_list)
+        embed.add_field(
+            name="📊 Статистика",
+            value=f"Всего скиллов в топе: **{total_skils}**\n"
+                  f"Участников в рейтинге: **{len(balance_data)}**",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Запросил: {interaction.user.display_name}")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Ошибка в команде top: {e}")
+        await interaction.followup.send(
+            "❌ Произошла ошибка при получении топа",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="history", description="Показать историю ваших транзакций")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    limit="Количество записей (от 1 до 20)"
+)
+async def history_command(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 10):
+    """Команда для просмотра истории транзакций"""
+    try:
+        user_id = interaction.user.id
+        history = get_history(user_id, limit=limit)
+        
+        if not history:
+            embed = discord.Embed(
+                title="📝 История транзакций",
+                description="У вас еще нет транзакций",
+                color=discord.Color.blue()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title=f"📝 История транзакций",
+            description=f"Последние {len(history)} операций",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Добавляем транзакции
+        history_text = ""
+        total_income = 0
+        total_outcome = 0
+        
+        for tx in reversed(history):
+            sign = "+" if tx["amount"] > 0 else ""
+            history_text += f"**{tx['datetime']}**\n"
+            history_text += f"Сумма: `{sign}{tx['amount']}` скиллов\n"
+            history_text += f"Баланс после: `{tx['balance_after']}` скиллов\n"
+            
+            if tx.get('reason'):
+                history_text += f"Причина: {tx['reason'][:50]}\n"
+            
+            if tx.get('message_link') and is_valid_url(tx['message_link']):
+                history_text += f"[Ссылка на сообщение]({tx['message_link']})\n"
+            
+            history_text += "\n"
+            
+            # Считаем статистику
+            if tx["amount"] > 0:
+                total_income += tx["amount"]
+            else:
+                total_outcome += abs(tx["amount"])
+        
+        # Разделяем историю если слишком длинная
+        if len(history_text) > 1024:
+            chunks = [history_text[i:i+1024] for i in range(0, len(history_text), 1024)]
+            embed.add_field(name="История операций", value=chunks[0], inline=False)
+            for i, chunk in enumerate(chunks[1:], 1):
+                embed.add_field(name=f"Продолжение {i}", value=chunk, inline=False)
+        else:
+            embed.add_field(name="Операции", value=history_text or "Нет операций", inline=False)
+        
+        # Добавляем статистику
+        embed.add_field(
+            name="📊 Статистика",
+            value=f"Всего получено: **+{total_income}** скиллов\n"
+                  f"Всего потрачено: **-{total_outcome}** скиллов\n"
+                  f"Текущий баланс: **{get_balance(user_id)}** скиллов",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"ID: {user_id}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде history: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при получении истории",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="add_skils", description="Добавить скиллы участнику (модераторы)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник, которому добавляются скиллы",
+    amount="Количество скиллов",
+    reason="Причина добавления"
+)
+async def add_skils(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 100000],
+    reason: str = ""
+):
+    """Команда для добавления скиллов (только для модераторов)"""
+    try:
+        if not has_mod_rights(interaction.user):
+            await log_action(
+                interaction.guild,
+                "Отказ в доступе",
+                "Попытка использовать /add_skils",
+                user=interaction.user,
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(
+                "❌ Только модераторы могут использовать эту команду",
+                ephemeral=True
+            )
+        
+        # Проверка на добавление себе
+        if member.id == interaction.user.id and not is_admin(interaction.user):
+            await interaction.response.send_message(
+                "❌ Нельзя добавлять скиллы себе!",
+                ephemeral=True
+            )
+            return
+        
+        # Добавляем скиллы
+        add_transaction(
+            member.id, 
+            amount, 
+            reason=f"Добавлено модератором {interaction.user.name}: {reason}"
+        )
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title="✅ Скиллы добавлены",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Участник",
+            value=f"{member.mention}\nНовый баланс: **{get_balance(member.id)}** скиллов",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Добавлено",
+            value=f"**+{amount}** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Модератор",
+            value=interaction.user.mention,
+            inline=True
+        )
+        
+        if reason:
+            embed.add_field(
+                name="Причина",
+                value=reason[:200],
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "Добавление скиллов",
+            f"**Модератор:** {interaction.user.mention}\n"
+            f"**Участник:** {member.mention}\n"
+            f"**Сумма:** +{amount} скиллов\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.green()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде add_skils: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при добавлении скиллов",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="remove_skils", description="Убрать скиллы у участника (модераторы)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник, у которого убираются скиллы",
+    amount="Количество скиллов",
+    reason="Причина"
+)
+async def remove_skils(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 1, 100000],
+    reason: str = ""
+):
+    """Команда для удаления скиллов (только для модераторов)"""
+    try:
+        if not has_mod_rights(interaction.user):
+            await log_action(
+                interaction.guild,
+                "Отказ в доступе",
+                "Попытка использовать /remove_skils",
+                user=interaction.user,
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(
+                "❌ Только модераторы могут использовать эту команду",
+                ephemeral=True
+            )
+        
+        # Проверка баланса участника
+        current_balance = get_balance(member.id)
+        if current_balance < amount:
+            await interaction.response.send_message(
+                f"❌ У участника недостаточно скиллов! Баланс: {current_balance}",
+                ephemeral=True
+            )
+            return
+        
+        # Убираем скиллы
+        add_transaction(
+            member.id, 
+            -amount, 
+            reason=f"Убрано модератором {interaction.user.name}: {reason}"
+        )
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title="✅ Скиллы убраны",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Участник",
+            value=f"{member.mention}\nНовый баланс: **{get_balance(member.id)}** скиллов",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Убрано",
+            value=f"**-{amount}** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Модератор",
+            value=interaction.user.mention,
+            inline=True
+        )
+        
+        if reason:
+            embed.add_field(
+                name="Причина",
+                value=reason[:200],
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "Удаление скиллов",
+            f"**Модератор:** {interaction.user.mention}\n"
+            f"**Участник:** {member.mention}\n"
+            f"**Сумма:** -{amount} скиллов\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.orange()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде remove_skils: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при удалении скиллов",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="set_balance", description="Установить баланс участника (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник",
+    amount="Новый баланс",
+    reason="Причина"
+)
+async def set_balance(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: app_commands.Range[int, 0, 1000000],
+    reason: str = ""
+):
+    """Команда для установки баланса (только для админа)"""
+    try:
+        if not is_admin(interaction.user):
+            await log_action(
+                interaction.guild,
+                "Отказ в доступе",
+                "Попытка использовать /set_balance",
+                user=interaction.user,
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(
+                "❌ Только администратор может использовать эту команду",
+                ephemeral=True
+            )
+        
+        # Получаем текущий баланс
+        current_balance = get_balance(member.id)
+        difference = amount - current_balance
+        
+        # Устанавливаем новый баланс
+        balance_data = load_balance()
+        balance_data[str(member.id)] = amount
+        save_balance(balance_data)
+        
+        # Записываем в историю
+        add_transaction(
+            member.id,
+            difference,
+            reason=f"Баланс установлен администратором {interaction.user.name}: {reason}"
+        )
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title="✅ Баланс установлен",
+            color=discord.Color.purple(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Участник",
+            value=member.mention,
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Старый баланс",
+            value=f"**{current_balance}** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Новый баланс",
+            value=f"**{amount}** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Изменение",
+            value=f"**{difference:+d}** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Администратор",
+            value=interaction.user.mention,
+            inline=True
+        )
+        
+        if reason:
+            embed.add_field(
+                name="Причина",
+                value=reason[:200],
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "Установка баланса",
+            f"**Администратор:** {interaction.user.mention}\n"
+            f"**Участник:** {member.mention}\n"
+            f"**Старый баланс:** {current_balance}\n"
+            f"**Новый баланс:** {amount}\n"
+            f"**Изменение:** {difference:+d}\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.purple()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде set_balance: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при установке баланса",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="reset_balance", description="Сбросить баланс участника (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник",
+    reason="Причина сброса"
+)
+async def reset_balance(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = ""
+):
+    """Команда для сброса баланса (только для админа)"""
+    try:
+        if not is_admin(interaction.user):
+            await log_action(
+                interaction.guild,
+                "Отказ в доступе",
+                "Попытка использовать /reset_balance",
+                user=interaction.user,
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(
+                "❌ Только администратор может использовать эту команду",
+                ephemeral=True
+            )
+        
+        # Получаем текущий баланс
+        current_balance = get_balance(member.id)
+        
+        if current_balance == 0:
+            await interaction.response.send_message(
+                f"✅ У участника {member.mention} и так нулевой баланс",
+                ephemeral=True
+            )
+            return
+        
+        # Сбрасываем баланс
+        balance_data = load_balance()
+        balance_data[str(member.id)] = 0
+        save_balance(balance_data)
+        
+        # Записываем в историю
+        add_transaction(
+            member.id,
+            -current_balance,
+            reason=f"Баланс сброшен администратором {interaction.user.name}: {reason}"
+        )
+        
+        # Создаем embed
+        embed = discord.Embed(
+            title="⚠️ Баланс сброшен",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Участник",
+            value=member.mention,
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Сброшено скиллов",
+            value=f"**{current_balance}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Новый баланс",
+            value="**0** скиллов",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Администратор",
+            value=interaction.user.mention,
+            inline=True
+        )
+        
+        if reason:
+            embed.add_field(
+                name="Причина",
+                value=reason[:200],
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Логируем действие
+        await log_action(
+            interaction.guild,
+            "Сброс баланса",
+            f"**Администратор:** {interaction.user.mention}\n"
+            f"**Участник:** {member.mention}\n"
+            f"**Сброшено:** {current_balance} скиллов\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде reset_balance: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при сбросе баланса",
+            ephemeral=True
+        )
+
+# ==============================================
+# КОМАНДЫ РЕЗЕРВНОГО КОПИРОВАНИЯ
+# ==============================================
+
 @bot.tree.command(name="backup", description="Создать резервную копию (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def backup_command(interaction: discord.Interaction):
@@ -1235,7 +1958,283 @@ async def data_info(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-# Автоматические задачи
+# ==============================================
+# КОМАНДЫ ДЛЯ РАБОТЫ С ПОСТРОЙКАМИ
+# ==============================================
+
+@bot.tree.command(name="submit_build", description="Отправить постройку на проверку")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    screenshot_url="Ссылка на скриншот постройки",
+    description="Описание постройки",
+    coordinates="Координаты постройки (если есть)"
+)
+async def submit_build(
+    interaction: discord.Interaction,
+    screenshot_url: str,
+    description: str = "",
+    coordinates: str = ""
+):
+    """Команда для отправки постройки на проверку"""
+    try:
+        # Проверяем валидность URL
+        if not is_valid_url(screenshot_url):
+            await interaction.response.send_message(
+                "❌ Пожалуйста, укажите корректную ссылку на изображение",
+                ephemeral=True
+            )
+            return
+        
+        # Создаем embed для проверки
+        embed = discord.Embed(
+            title="🏗️ Новая постройка на проверку",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Автор",
+            value=f"{interaction.user.mention} (`{interaction.user.id}`)",
+            inline=False
+        )
+        
+        if description:
+            embed.add_field(
+                name="Описание",
+                value=description[:500],
+                inline=False
+            )
+        
+        if coordinates:
+            embed.add_field(
+                name="Координаты",
+                value=coordinates,
+                inline=True
+            )
+        
+        embed.set_image(url=screenshot_url)
+        embed.set_footer(text=f"ID заявки: {int(time.time())}")
+        
+        # Создаем кнопки для модерации
+        view = discord.ui.View(timeout=None)
+        
+        approve_button = discord.ui.Button(
+            label="✅ Одобрить",
+            style=discord.ButtonStyle.success,
+            custom_id=f"approve_build_{int(time.time())}"
+        )
+        
+        deny_button = discord.ui.Button(
+            label="❌ Отклонить",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"deny_build_{int(time.time())}"
+        )
+        
+        async def approve_callback(i: discord.Interaction):
+            if not has_mod_rights(i.user):
+                await i.response.send_message(
+                    "❌ Только модераторы могут одобрять постройки",
+                    ephemeral=True
+                )
+                return
+            
+            # Начисляем награду
+            reward = 50  # Базовая награда за постройку
+            add_transaction(
+                interaction.user.id,
+                reward,
+                reason=f"Награда за постройку: {description[:100]}"
+            )
+            
+            # Обновляем сообщение
+            embed.color = discord.Color.green()
+            embed.title = "✅ Постройка одобрена"
+            embed.add_field(
+                name="Модератор",
+                value=i.user.mention,
+                inline=True
+            )
+            embed.add_field(
+                name="Награда",
+                value=f"+{reward} скиллов",
+                inline=True
+            )
+            
+            # Отправляем уведомление автору
+            try:
+                await interaction.user.send(
+                    f"🎉 Ваша постройка была одобрена модератором {i.user.mention}!\n"
+                    f"Вы получили **+{reward}** скиллов!"
+                )
+            except:
+                pass  # Не отправляем DM если пользователь запретил
+            
+            await i.response.edit_message(embed=embed, view=None)
+            
+            # Логируем действие
+            await log_action(
+                i.guild,
+                "Постройка одобрена",
+                f"**Модератор:** {i.user.mention}\n"
+                f"**Автор:** {interaction.user.mention}\n"
+                f"**Награда:** +{reward} скиллов\n"
+                f"**Описание:** {description[:200]}",
+                user=i.user,
+                color=discord.Color.green()
+            )
+        
+        async def deny_callback(i: discord.Interaction):
+            if not has_mod_rights(i.user):
+                await i.response.send_message(
+                    "❌ Только модераторы могут отклонять постройки",
+                    ephemeral=True
+                )
+                return
+            
+            # Спрашиваем причину отказа
+            modal = discord.ui.Modal(title="Причина отказа")
+            modal.add_item(
+                discord.ui.TextInput(
+                    label="Причина отказа",
+                    style=discord.TextStyle.paragraph,
+                    placeholder="Укажите причину, по которой постройка отклонена...",
+                    required=True
+                )
+            )
+            
+            async def modal_callback(modal_interaction: discord.Interaction):
+                reason = modal.children[0].value
+                
+                # Обновляем сообщение
+                embed.color = discord.Color.red()
+                embed.title = "❌ Постройка отклонена"
+                embed.add_field(
+                    name="Модератор",
+                    value=modal_interaction.user.mention,
+                    inline=True
+                )
+                embed.add_field(
+                    name="Причина",
+                    value=reason[:500],
+                    inline=False
+                )
+                
+                # Отправляем уведомление автору
+                try:
+                    await interaction.user.send(
+                        f"😔 Ваша постройка была отклонена модератором {modal_interaction.user.mention}.\n"
+                        f"**Причина:** {reason}"
+                    )
+                except:
+                    pass
+                
+                await modal_interaction.response.edit_message(embed=embed, view=None)
+                
+                # Логируем действие
+                await log_action(
+                    modal_interaction.guild,
+                    "Постройка отклонена",
+                    f"**Модератор:** {modal_interaction.user.mention}\n"
+                    f"**Автор:** {interaction.user.mention}\n"
+                    f"**Причина:** {reason[:200]}",
+                    user=modal_interaction.user,
+                    color=discord.Color.red()
+                )
+            
+            modal.on_submit = modal_callback
+            await i.response.send_modal(modal)
+        
+        approve_button.callback = approve_callback
+        deny_button.callback = deny_callback
+        
+        view.add_item(approve_button)
+        view.add_item(deny_button)
+        
+        # Отправляем заявку в канал проверки
+        channel = bot.get_channel(APPROVAL_CHANNEL_ID)
+        if channel:
+            await channel.send(embed=embed, view=view)
+            await interaction.response.send_message(
+                "✅ Ваша постройка отправлена на проверку!",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Канал для проверки не найден",
+                ephemeral=True
+            )
+        
+    except Exception as e:
+        print(f"Ошибка в команде submit_build: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при отправке постройки",
+            ephemeral=True
+        )
+
+# ==============================================
+# ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ
+# ==============================================
+
+@bot.tree.command(name="help", description="Показать список всех команд")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def help_command(interaction: discord.Interaction):
+    """Команда помощи"""
+    try:
+        embed = discord.Embed(
+            title="📚 Помощь по командам Skill бота",
+            description="Все доступные команды:",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Команды для всех пользователей
+        embed.add_field(
+            name="👤 Основные команды",
+            value="• `/balance` - Показать ваш баланс\n"
+                  "• `/give [участник] [количество] [причина]` - Передать скиллы\n"
+                  "• `/top [количество]` - Топ участников по скиллам\n"
+                  "• `/history [количество]` - История ваших транзакций\n"
+                  "• `/submit_build [скриншот] [описание]` - Отправить постройку на проверку",
+            inline=False
+        )
+        
+        # Команды для модераторов
+        if has_mod_rights(interaction.user):
+            embed.add_field(
+                name="🛡️ Команды модераторов",
+                value="• `/add_skils [участник] [количество] [причина]` - Добавить скиллы\n"
+                      "• `/remove_skils [участник] [количество] [причина]` - Убрать скиллы",
+                inline=False
+            )
+        
+        # Команды для администратора
+        if is_admin(interaction.user):
+            embed.add_field(
+                name="⚙️ Команды администратора",
+                value="• `/set_balance [участник] [количество] [причина]` - Установить баланс\n"
+                      "• `/reset_balance [участник] [причина]` - Сбросить баланс\n"
+                      "• `/backup` - Создать резервную копию\n"
+                      "• `/restore_backup [id]` - Восстановить из резервной копии\n"
+                      "• `/backup_info` - Информация о резервных копиях\n"
+                      "• `/data_info` - Информация о данных",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Запросил: {interaction.user.display_name}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"Ошибка в команде help: {e}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка при получении справки",
+            ephemeral=True
+        )
+
+# ==============================================
+# АВТОМАТИЧЕСКИЕ ЗАДАЧИ И СОБЫТИЯ
+# ==============================================
+
 @tasks.loop(hours=6)
 async def auto_backup_task():
     """Автоматическое создание резервной копии каждые 6 часов"""
