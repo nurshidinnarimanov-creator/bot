@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from discord.ui import Button, View
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,12 +22,23 @@ if not TOKEN:
 GUILD_ID = 1423020585881043016
 BACKUP_CHANNEL_ID = 1457768411873415190  # ID канала для хранения резервных копий
 LOG_CHANNEL_ID = 1450910208325980335
-APPROVAL_CHANNEL_ID = 1424167988571017326
+APPROVAL_CHANNEL_ID = 1457779107017261210
+WELCOME_CHANNEL_ID = 1457779107017261210  # Канал для подтверждения новых участников
 ADMIN_USER_ID = 673564170167255041
 MOD_ROLE_ID = 1423344639531810927
 SECOND_MOD_ROLE_ID = 1454381506934865986
 BUILDER_ROLE_ID = 1423344924262273157
-APPROVED_ROLE_ID = 1423344924262273157
+APPROVED_ROLE_ID = 1423344924262273157  # Роль для подтвержденных участников
+
+# Настройки
+APPROVAL_MESSAGE_EXPIRE_HOURS = 24  # Через сколько часов удалять сообщение об отказе
+
+# Цвета для эмбедов
+COLOR_SUCCESS = 0x00ff00  # Зеленый
+COLOR_WARNING = 0xffaa00  # Оранжевый
+COLOR_ERROR = 0xff0000    # Красный
+COLOR_INFO = 0x0080ff     # Синий
+COLOR_PURPLE = 0x8000ff   # Фиолетовый
 
 DATA_FOLDER = Path("data")
 BACKUP_FOLDER = Path("backups")
@@ -144,7 +156,7 @@ class BackupManager:
             compressed = base64.b64decode(encoded_data)
             
             # Распаковываем
-            json_str = zlib.decompress(compressed).decode('utf-8')
+            json_str = zlib.depress(compressed).decode('utf-8')
             
             # Парсим JSON
             payload = json.loads(json_str)
@@ -816,20 +828,376 @@ def is_valid_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
-# Классы представлений для Discord
-class MemberApprovalView(discord.ui.View):
-    """Представление для одобрения участников"""
-    def __init__(self, approve_cid: str, deny_cid: str):
-        super().__init__(timeout=None)
-        self.approve_cid = approve_cid
-        self.deny_cid = deny_cid
+# ==============================================
+# СОБЫТИЕ ПРИ ПОЯВЛЕНИИ НОВОГО УЧАСТНИКА
+# ==============================================
 
-class HistoryView(discord.ui.View):
-    """Представление для навигации по истории"""
-    def __init__(self, user_id: int, page: int = 0):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.page = page
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Событие при присоединении нового участника"""
+    try:
+        # Проверяем, чтобы это был не бот
+        if member.bot:
+            return
+        
+        # Проверяем, существует ли канал для подтверждения
+        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        if not welcome_channel:
+            print(f"Канал для подтверждения не найден (ID: {WELCOME_CHANNEL_ID})")
+            return
+        
+        # Проверяем, есть ли у пользователя уже одобренная роль
+        approved_role = member.guild.get_role(APPROVED_ROLE_ID)
+        if approved_role and approved_role in member.roles:
+            return  # Уже подтвержден
+        
+        # Создаем embed для подтверждения
+        embed = discord.Embed(
+            title="👋 Новый участник",
+            description=f"{member.mention} присоединился к серверу.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(
+            name="Информация об участнике",
+            value=f"**Имя:** {member.display_name}\n"
+                  f"**ID:** `{member.id}`\n"
+                  f"**Аккаунт создан:** <t:{int(member.created_at.timestamp())}:R>",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Статистика сервера",
+            value=f"Участников: {member.guild.member_count}",
+            inline=True
+        )
+        
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"Для подтверждения используйте кнопки ниже")
+        
+        # Создаем кнопки
+        view = discord.ui.View(timeout=None)
+        
+        # Генерируем уникальные custom_id для кнопок
+        timestamp = int(time.time())
+        approve_cid = f"approve_member_{member.id}_{timestamp}"
+        deny_cid = f"deny_member_{member.id}_{timestamp}"
+        timeout_cid = f"timeout_member_{member.id}_{timestamp}"
+        
+        approve_button = discord.ui.Button(
+            label="✅ Подтвердить",
+            style=discord.ButtonStyle.success,
+            custom_id=approve_cid,
+            emoji="✅"
+        )
+        
+        deny_button = discord.ui.Button(
+            label="❌ Отклонить",
+            style=discord.ButtonStyle.danger,
+            custom_id=deny_cid,
+            emoji="❌"
+        )
+        
+        timeout_button = discord.ui.Button(
+            label="⏰ Таймаут",
+            style=discord.ButtonStyle.secondary,
+            custom_id=timeout_cid,
+            emoji="⏰"
+        )
+        
+        async def approve_callback(interaction: discord.Interaction):
+            """Коллбэк для кнопки подтверждения"""
+            if not has_mod_rights(interaction.user):
+                await interaction.response.send_message(
+                    "❌ Только модераторы могут подтверждать участников",
+                    ephemeral=True
+                )
+                return
+            
+            # Даем роль подтвержденного участника
+            approved_role = member.guild.get_role(APPROVED_ROLE_ID)
+            if approved_role:
+                try:
+                    await member.add_roles(approved_role, reason="Подтверждение модератором")
+                    
+                    # Обновляем embed
+                    embed.color = discord.Color.green()
+                    embed.title = "✅ Участник подтвержден"
+                    embed.add_field(
+                        name="Модератор",
+                        value=interaction.user.mention,
+                        inline=True
+                    )
+                    embed.add_field(
+                        name="Время",
+                        value=f"<t:{int(time.time())}:R>",
+                        inline=True
+                    )
+                    
+                    # Отправляем приветственное сообщение участнику
+                    try:
+                        welcome_dm = discord.Embed(
+                            title=f"Добро пожаловать на {member.guild.name}!",
+                            description="Ваша заявка была одобрена модератором.\n\n"
+                                      "**Доступные команды:**\n"
+                                      "• `/balance` - Узнать свой баланс скиллов\n"
+                                      "• `/help` - Получить список всех команд\n"
+                                      "• `/submit_build` - Отправить постройку на проверку",
+                            color=discord.Color.green()
+                        )
+                        welcome_dm.set_thumbnail(url=member.guild.icon.url if member.guild.icon else None)
+                        await member.send(embed=welcome_dm)
+                    except:
+                        pass  # Не отправляем DM если пользователь запретил
+                    
+                    # Отключаем все кнопки
+                    for child in view.children:
+                        if isinstance(child, discord.ui.Button):
+                            child.disabled = True
+                    
+                    await interaction.response.edit_message(embed=embed, view=view)
+                    
+                    # Логируем действие
+                    await log_action(
+                        member.guild,
+                        "Участник подтвержден",
+                        f"**Модератор:** {interaction.user.mention}\n"
+                        f"**Участник:** {member.mention} (`{member.id}`)\n"
+                        f"**Роль выдана:** {approved_role.mention}",
+                        user=interaction.user,
+                        color=discord.Color.green()
+                    )
+                    
+                    print(f"Участник {member.id} подтвержден модератором {interaction.user.id}")
+                    
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"❌ Ошибка при выдаче роли: {e}",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.response.send_message(
+                    "❌ Роль для подтверждения не найдена",
+                    ephemeral=True
+                )
+        
+        async def deny_callback(interaction: discord.Interaction):
+            """Коллбэк для кнопки отклонения"""
+            if not has_mod_rights(interaction.user):
+                await interaction.response.send_message(
+                    "❌ Только модераторы могут отклонять участников",
+                    ephemeral=True
+                )
+                return
+            
+            # Спрашиваем причину
+            modal = discord.ui.Modal(title="Причина отклонения")
+            reason_input = discord.ui.TextInput(
+                label="Причина отказа",
+                style=discord.TextStyle.paragraph,
+                placeholder="Укажите причину, по которой участник отклонен...",
+                required=True,
+                max_length=500
+            )
+            modal.add_item(reason_input)
+            
+            async def modal_callback(modal_interaction: discord.Interaction):
+                reason = reason_input.value
+                
+                try:
+                    # Кикаем участника
+                    await member.kick(reason=f"Отклонен модератором: {reason}")
+                    
+                    # Обновляем embed
+                    embed.color = discord.Color.red()
+                    embed.title = "❌ Участник отклонен"
+                    embed.add_field(
+                        name="Модератор",
+                        value=modal_interaction.user.mention,
+                        inline=True
+                    )
+                    embed.add_field(
+                        name="Причина",
+                        value=reason[:200],
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="Время",
+                        value=f"<t:{int(time.time())}:R>",
+                        inline=True
+                    )
+                    
+                    # Отключаем все кнопки
+                    for child in view.children:
+                        if isinstance(child, discord.ui.Button):
+                            child.disabled = True
+                    
+                    await modal_interaction.response.edit_message(embed=embed, view=view)
+                    
+                    # Логируем действие
+                    await log_action(
+                        member.guild,
+                        "Участник отклонен",
+                        f"**Модератор:** {modal_interaction.user.mention}\n"
+                        f"**Участник:** {member.mention} (`{member.id}`)\n"
+                        f"**Причина:** {reason}",
+                        user=modal_interaction.user,
+                        color=discord.Color.red()
+                    )
+                    
+                    print(f"Участник {member.id} отклонен модератором {modal_interaction.user.id}")
+                    
+                except discord.Forbidden:
+                    await modal_interaction.response.send_message(
+                        "❌ Недостаточно прав для кика участника",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    await modal_interaction.response.send_message(
+                        f"❌ Ошибка при кике участника: {e}",
+                        ephemeral=True
+                    )
+            
+            modal.on_submit = modal_callback
+            await interaction.response.send_modal(modal)
+        
+        async def timeout_callback(interaction: discord.Interaction):
+            """Коллбэк для кнопки таймаута"""
+            if not has_mod_rights(interaction.user):
+                await interaction.response.send_message(
+                    "❌ Только модераторы могут ставить таймаут",
+                    ephemeral=True
+                )
+                return
+            
+            modal = discord.ui.Modal(title="Настройки таймаута")
+            
+            duration_input = discord.ui.TextInput(
+                label="Длительность (в часах)",
+                placeholder="1, 2, 3, 6, 12, 24...",
+                required=True,
+                max_length=3
+            )
+            
+            reason_input = discord.ui.TextInput(
+                label="Причина таймаута",
+                style=discord.TextStyle.paragraph,
+                placeholder="Укажите причину таймаута...",
+                required=True,
+                max_length=500
+            )
+            
+            modal.add_item(duration_input)
+            modal.add_item(reason_input)
+            
+            async def modal_callback(modal_interaction: discord.Interaction):
+                try:
+                    duration = int(duration_input.value)
+                    reason = reason_input.value
+                    
+                    if duration <= 0 or duration > 168:  # Максимум 7 дней
+                        await modal_interaction.response.send_message(
+                            "❌ Некорректная длительность. Используйте от 1 до 168 часов.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    # Вычисляем время окончания таймаута
+                    timeout_duration = datetime.timedelta(hours=duration)
+                    timeout_until = discord.utils.utcnow() + timeout_duration
+                    
+                    # Устанавливаем таймаут
+                    await member.timeout(timeout_until, reason=f"Таймаут от модератора: {reason}")
+                    
+                    # Обновляем embed
+                    embed.color = discord.Color.orange()
+                    embed.title = "⏰ Участнику дан таймаут"
+                    embed.add_field(
+                        name="Модератор",
+                        value=modal_interaction.user.mention,
+                        inline=True
+                    )
+                    embed.add_field(
+                        name="Длительность",
+                        value=f"{duration} часов",
+                        inline=True
+                    )
+                    embed.add_field(
+                        name="Причина",
+                        value=reason[:200],
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="Закончится",
+                        value=f"<t:{int(timeout_until.timestamp())}:R>",
+                        inline=True
+                    )
+                    
+                    # Отключаем все кнопки
+                    for child in view.children:
+                        if isinstance(child, discord.ui.Button):
+                            child.disabled = True
+                    
+                    await modal_interaction.response.edit_message(embed=embed, view=view)
+                    
+                    # Логируем действие
+                    await log_action(
+                        member.guild,
+                        "Участнику дан таймаут",
+                        f"**Модератор:** {modal_interaction.user.mention}\n"
+                        f"**Участник:** {member.mention} (`{member.id}`)\n"
+                        f"**Длительность:** {duration} часов\n"
+                        f"**Причина:** {reason}",
+                        user=modal_interaction.user,
+                        color=discord.Color.orange()
+                    )
+                    
+                    print(f"Участнику {member.id} дан таймаут на {duration} часов")
+                    
+                except ValueError:
+                    await modal_interaction.response.send_message(
+                        "❌ Некорректная длительность. Введите число.",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    await modal_interaction.response.send_message(
+                        f"❌ Ошибка при установке таймаута: {e}",
+                        ephemeral=True
+                    )
+            
+            modal.on_submit = modal_callback
+            await interaction.response.send_modal(modal)
+        
+        # Привязываем коллбэки к кнопкам
+        approve_button.callback = approve_callback
+        deny_button.callback = deny_callback
+        timeout_button.callback = timeout_callback
+        
+        view.add_item(approve_button)
+        view.add_item(deny_button)
+        view.add_item(timeout_button)
+        
+        # Отправляем сообщение в канал
+        await welcome_channel.send(embed=embed, view=view)
+        
+        print(f"Создана заявка для нового участника: {member.id} ({member.name})")
+        
+        # Сохраняем информацию о заявке
+        approval_data = load_approval_data()
+        approval_data[str(member.id)] = {
+            "message_id": None,  # Будет обновлено после отправки
+            "created_at": time.time(),
+            "status": "pending",
+            "approve_cid": approve_cid,
+            "deny_cid": deny_cid
+        }
+        save_approval_data(approval_data)
+        
+    except Exception as e:
+        print(f"Ошибка при создании заявки на подтверждение: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ==============================================
 # ОСНОВНЫЕ КОМАНДЫ БОТА
@@ -2172,6 +2540,72 @@ async def submit_build(
         )
 
 # ==============================================
+# КОМАНДА ДЛЯ ПОВТОРНОЙ ОТПРАВКИ ПРИГЛАШЕНИЯ
+# ==============================================
+
+@bot.tree.command(name="send_welcome", description="Отправить приглашение участнику (модераторы)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    member="Участник для приглашения",
+    reason="Причина повторной отправки"
+)
+async def send_welcome(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = ""
+):
+    """Команда для повторной отправки приглашения участнику"""
+    try:
+        if not has_mod_rights(interaction.user):
+            await interaction.response.send_message(
+                "❌ Только модераторы могут использовать эту команду",
+                ephemeral=True
+            )
+            return
+        
+        # Проверяем, есть ли у пользователя уже одобренная роль
+        approved_role = member.guild.get_role(APPROVED_ROLE_ID)
+        if approved_role and approved_role in member.roles:
+            await interaction.response.send_message(
+                f"❌ Участник {member.mention} уже имеет подтвержденную роль",
+                ephemeral=True
+            )
+            return
+        
+        # Имитируем событие присоединения
+        await on_member_join(member)
+        
+        embed = discord.Embed(
+            title="✅ Приглашение отправлено",
+            description=f"Новая заявка создана для {member.mention}",
+            color=discord.Color.green()
+        )
+        
+        if reason:
+            embed.add_field(name="Причина", value=reason, inline=False)
+        
+        embed.set_footer(text=f"Отправил: {interaction.user.display_name}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        await log_action(
+            interaction.guild,
+            "Повторная отправка приглашения",
+            f"**Модератор:** {interaction.user.mention}\n"
+            f"**Участник:** {member.mention}\n"
+            f"**Причина:** {reason}",
+            user=interaction.user,
+            color=discord.Color.green()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде send_welcome: {e}")
+        await interaction.response.send_message(
+            f"❌ Ошибка: {str(e)}",
+            ephemeral=True
+        )
+
+# ==============================================
 # ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ
 # ==============================================
 
@@ -2203,7 +2637,8 @@ async def help_command(interaction: discord.Interaction):
             embed.add_field(
                 name="🛡️ Команды модераторов",
                 value="• `/add_skils [участник] [количество] [причина]` - Добавить скиллы\n"
-                      "• `/remove_skils [участник] [количество] [причина]` - Убрать скиллы",
+                      "• `/remove_skils [участник] [количество] [причина]` - Убрать скиллы\n"
+                      "• `/send_welcome [участник] [причина]` - Отправить приглашение",
                 inline=False
             )
         
@@ -2261,6 +2696,53 @@ async def check_data_integrity():
     except Exception as e:
         print(f"Ошибка проверки целостности данных: {e}")
 
+@tasks.loop(hours=1)
+async def cleanup_old_approvals():
+    """Очистка старых сообщений с заявками"""
+    try:
+        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        if not welcome_channel:
+            return
+        
+        approval_data = load_approval_data()
+        current_time = time.time()
+        messages_to_delete = []
+        
+        # Находим старые сообщения
+        async for message in welcome_channel.history(limit=200):
+            if message.author == bot.user:
+                if message.embeds:
+                    embed_title = message.embeds[0].title if message.embeds else ""
+                    if "Новый участник" in embed_title or "Участник" in embed_title:
+                        message_age_hours = (current_time - message.created_at.timestamp()) / 3600
+                        
+                        if message_age_hours > APPROVAL_MESSAGE_EXPIRE_HOURS:
+                            messages_to_delete.append(message)
+        
+        # Удаляем старые сообщения
+        for message in messages_to_delete:
+            try:
+                await message.delete()
+                print(f"Удалено старое сообщение с заявкой: {message.id}")
+            except Exception as e:
+                print(f"Ошибка при удалении сообщения {message.id}: {e}")
+        
+        # Очищаем старые записи из approval_data
+        if approval_data:
+            updated_data = {}
+            for user_id, data in approval_data.items():
+                if "created_at" in data:
+                    data_age_hours = (current_time - data["created_at"]) / 3600
+                    if data_age_hours <= APPROVAL_MESSAGE_EXPIRE_HOURS * 2:  # Храним дольше чем сообщения
+                        updated_data[user_id] = data
+            
+            if len(updated_data) != len(approval_data):
+                save_approval_data(updated_data)
+                print(f"Очищено {len(approval_data) - len(updated_data)} старых записей о заявках")
+                
+    except Exception as e:
+        print(f"Ошибка при очистке старых заявок: {e}")
+
 @bot.event
 async def on_ready():
     """Событие при запуске бота"""
@@ -2270,6 +2752,7 @@ async def on_ready():
         print(f"🆔 ID бота: {bot.user.id}")
         print(f"🏰 Сервер ID: {GUILD_ID}")
         print(f"📁 Папка данных: {DATA_FOLDER.absolute()}")
+        print(f"👋 Канал для подтверждения: {WELCOME_CHANNEL_ID}")
         
         # Проверяем и восстанавливаем данные при запуске
         print("🔍 Проверка данных...")
@@ -2295,10 +2778,12 @@ async def on_ready():
         # Запускаем автоматические задачи
         auto_backup_task.start()
         check_data_integrity.start()
+        cleanup_old_approvals.start()
         
         print("🔄 Автоматические задачи запущены:")
         print("   • Резервное копирование: каждые 6 часов")
         print("   • Проверка целостности: каждые 30 минут")
+        print("   • Очистка старых заявок: каждый час")
         print("🤖 Бот готов к работе!")
         
     except Exception as e:
