@@ -3,10 +3,14 @@ import json
 import time
 import datetime
 import shutil
+import base64
+import asyncio
+import zlib
+import csv
 from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,7 +19,7 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN не установлен")
 
 GUILD_ID = 1423020585881043016
-NEWS_CHANNEL_ID = 1444051504444080139
+BACKUP_CHANNEL_ID = 1450910208325980335  # ID канала для хранения резервных копий
 LOG_CHANNEL_ID = 1450910208325980335
 APPROVAL_CHANNEL_ID = 1424167988571017326
 ADMIN_USER_ID = 673564170167255041
@@ -34,13 +38,13 @@ APPROVAL_MAP_FILE = DATA_FOLDER / "approval_map.json"
 BALANCE_FILE = DATA_FOLDER / "balance.json"
 HISTORY_FILE = DATA_FOLDER / "history.json"
 CONFIG_FILE = DATA_FOLDER / "config.json"
+BACKUP_CONFIG_FILE = DATA_FOLDER / "backup_config.json"
 
-# Функция проверки админских прав
-def is_admin(user: discord.User | discord.Member) -> bool:
-    """Проверяет, является ли пользователь администратором (по ID)"""
-    return user.id == ADMIN_USER_ID
+# Константа для идентификации резервных копий
+BACKUP_SIGNATURE = "SKILL_BOT_BACKUP_V2"
 
 def fix_json_file_encoding(filepath: Path):
+    """Исправляет кодировку JSON файлов"""
     if not filepath.exists():
         with filepath.open("w", encoding="utf-8") as f:
             json.dump({}, f, ensure_ascii=False, indent=2)
@@ -73,6 +77,7 @@ def fix_json_file_encoding(filepath: Path):
             with filepath.open("w", encoding="utf-8") as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
 
+# Исправляем кодировку всех файлов при запуске
 fix_json_file_encoding(BALANCE_FILE)
 fix_json_file_encoding(HISTORY_FILE)
 fix_json_file_encoding(APPROVAL_MAP_FILE)
@@ -84,24 +89,574 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def create_backup():
+class BackupManager:
+    """Менеджер резервного копирования"""
+    
+    @staticmethod
+    def create_backup_payload() -> Dict[str, Any]:
+        """Создает структурированный payload для резервной копии"""
+        payload = {
+            "signature": BACKUP_SIGNATURE,
+            "version": "2.0",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "created_by": "skill_bot",
+            "data": {}
+        }
+        
+        # Читаем все файлы данных
+        files_to_backup = [
+            ("balance", BALANCE_FILE),
+            ("history", HISTORY_FILE),
+            ("approval_map", APPROVAL_MAP_FILE)
+        ]
+        
+        for name, filepath in files_to_backup:
+            if filepath.exists():
+                try:
+                    content = filepath.read_text(encoding="utf-8")
+                    payload["data"][name] = content
+                    payload[f"{name}_size"] = len(content)
+                except Exception as e:
+                    print(f"Ошибка чтения файла {filepath}: {e}")
+                    payload["data"][name] = ""
+        
+        payload["total_size"] = sum(len(str(v)) for v in payload["data"].values())
+        return payload
+    
+    @staticmethod
+    def compress_backup(payload: Dict) -> str:
+        """Сжимает и кодирует резервную копию для Discord"""
+        json_str = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        
+        # Сжимаем данные
+        compressed = zlib.compress(json_str.encode('utf-8'))
+        
+        # Кодируем в base64 для безопасной передачи
+        encoded = base64.b64encode(compressed).decode('utf-8')
+        
+        return encoded
+    
+    @staticmethod
+    def decompress_backup(encoded_data: str) -> Optional[Dict]:
+        """Восстанавливает резервную копию из закодированной строки"""
+        try:
+            # Декодируем из base64
+            compressed = base64.b64decode(encoded_data)
+            
+            # Распаковываем
+            json_str = zlib.decompress(compressed).decode('utf-8')
+            
+            # Парсим JSON
+            payload = json.loads(json_str)
+            
+            # Проверяем сигнатуру
+            if payload.get("signature") != BACKUP_SIGNATURE:
+                print("Неверная сигнатура резервной копии")
+                return None
+            
+            return payload
+        except Exception as e:
+            print(f"Ошибка декомпрессии резервной копии: {e}")
+            return None
+    
+    @staticmethod
+    def split_for_discord(data: str, max_chunk: int = 1900) -> List[str]:
+        """Разделяет данные на части для отправки в Discord"""
+        chunks = []
+        current_chunk = ""
+        
+        # Разделяем по строкам, чтобы не разрывать JSON
+        lines = data.split('\n')
+        
+        for line in lines:
+            if len(current_chunk) + len(line) + 1 < max_chunk:
+                current_chunk += line + '\n'
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = line + '\n'
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    @staticmethod
+    def create_human_readable_backup() -> str:
+        """Создает читабельную резервную копию для ручного восстановления"""
+        balance_data = load_balance()
+        history_data = load_history()
+        
+        output = [
+            "=" * 60,
+            "РЕЗЕРВНАЯ КОПИЯ SKILL БОТА",
+            f"Дата создания: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
+            f"Сигнатура: {BACKUP_SIGNATURE}",
+            "=" * 60,
+            "",
+            "1. БАЛАНСЫ ПОЛЬЗОВАТЕЛЕЙ:",
+            "=" * 60
+        ]
+        
+        for user_id, balance in sorted(balance_data.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
+            output.append(f"ID: {user_id} -> Баланс: {balance} скиллов")
+        
+        output.extend([
+            "",
+            "2. ИСТОРИЯ ТРАНЗАКЦИЙ (последние 3 на каждого пользователя):",
+            "=" * 60
+        ])
+        
+        for user_id, transactions in history_data.items():
+            if transactions:
+                output.append(f"\nПользователь ID: {user_id}")
+                for i, tx in enumerate(reversed(transactions[-3:]), 1):
+                    output.append(f"  {i}. {tx.get('datetime', 'N/A')}: {tx.get('amount', 0):+d} скиллов")
+                    if tx.get('reason'):
+                        output.append(f"     Причина: {tx['reason'][:50]}")
+        
+        output.extend([
+            "",
+            "=" * 60,
+            "КОМАНДЫ ДЛЯ ВОССТАНОВЛЕНИЯ:",
+            "=" * 60,
+            "1. Восстановить через Discord: /restore_backup",
+            "2. Восстановить из этого сообщения: скопируйте всё содержимое",
+            "   ниже и используйте команду /restore_from_text",
+            "",
+            "КОНЕЦ РЕЗЕРВНОЙ КОПИИ",
+            "=" * 60
+        ])
+        
+        return '\n'.join(output)
+    
+    @staticmethod
+    def create_simple_backup() -> str:
+        """Создает упрощенную резервную копию в формате CSV"""
+        balance_data = load_balance()
+        history_data = load_history()
+        
+        lines = [
+            "# SKILL BOT BACKUP DATA",
+            f"# Generated: {datetime.datetime.now().isoformat()}",
+            f"# Signature: {BACKUP_SIGNATURE}",
+            "",
+            "[BALANCE]"
+        ]
+        
+        # Балансы
+        for user_id, balance in balance_data.items():
+            lines.append(f"{user_id},{balance}")
+        
+        lines.extend([
+            "",
+            "[HISTORY]"
+        ])
+        
+        # История
+        for user_id, transactions in history_data.items():
+            for tx in transactions[-5:]:  # Последние 5 транзакций
+                lines.append(f"{user_id},{tx.get('datetime', '')},{tx.get('amount', 0)},{tx.get('reason', '')}")
+        
+        return '\n'.join(lines)
+
+async def create_enhanced_backup(interaction: discord.Interaction = None):
+    """Создает улучшенную резервную копию"""
     try:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = BACKUP_FOLDER / f"backup_{timestamp}"
-        backup_path.mkdir(exist_ok=True)
+        channel = bot.get_channel(BACKUP_CHANNEL_ID)
+        if not channel:
+            raise Exception(f"Канал для резервных копий не найден (ID: {BACKUP_CHANNEL_ID})")
         
-        files_to_backup = [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]
-        for file in files_to_backup:
-            if file.exists():
-                shutil.copy2(file, backup_path / file.name)
+        # Удаляем старые резервные копии (оставляем только 10 последних)
+        messages_to_delete = []
+        async for message in channel.history(limit=50):
+            if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
+                messages_to_delete.append(message)
         
-        print(f"Резервная копия создана: {backup_path}")
-        return True
+        if len(messages_to_delete) > 10:
+            for msg in messages_to_delete[10:]:
+                try:
+                    await msg.delete()
+                except:
+                    pass
+        
+        # Создаем два типа резервных копий
+        timestamp = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        backup_id = f"{int(time.time())}"
+        
+        # 1. Сжатая версия для автоматического восстановления
+        payload = BackupManager.create_backup_payload()
+        compressed_backup = BackupManager.compress_backup(payload)
+        
+        # 2. Читаемая версия для ручного восстановления
+        human_readable = BackupManager.create_human_readable_backup()
+        
+        # 3. Простая CSV версия
+        simple_backup = BackupManager.create_simple_backup()
+        
+        # Отправляем основное сообщение с читаемой версией
+        backup_msg = await channel.send(
+            f"**📦 РЕЗЕРВНАЯ КОПИЯ SKILL БОТА**\n"
+            f"```\n"
+            f"ID: {backup_id}\n"
+            f"Дата: {timestamp}\n"
+            f"Сигнатура: {BACKUP_SIGNATURE}\n"
+            f"```\n"
+            f"Для восстановления используйте команды:\n"
+            f"• `/restore_backup` - автоматическое восстановление\n"
+            f"• `/restore_from_text` - ручное восстановление\n"
+            f"• `/restore_from_text backup_id={backup_id}` - по ID\n\n"
+            f"**Читаемая версия:**\n"
+            f"```\n{human_readable[:800]}...\n```"
+        )
+        
+        # Отправляем сжатую версию как ответ
+        chunks = BackupManager.split_for_discord(compressed_backup)
+        for i, chunk in enumerate(chunks, 1):
+            await backup_msg.reply(f"**СЖАТАЯ КОПИЯ {i}/{len(chunks)}**\n```\n{chunk}\n```")
+        
+        # Отправляем простую CSV версию
+        simple_chunks = BackupManager.split_for_discord(simple_backup)
+        for i, chunk in enumerate(simple_chunks, 1):
+            await backup_msg.reply(f"**CSV КОПИЯ {i}/{len(simple_chunks)}**\n```\n{chunk}\n```")
+        
+        # Сохраняем ID последней резервной копии в конфиг
+        backup_config = load_json_file_safe(BACKUP_CONFIG_FILE, {})
+        backup_config["last_backup_id"] = backup_msg.id
+        backup_config["last_backup_time"] = time.time()
+        backup_config["backup_id"] = backup_id
+        save_json_file_safe(BACKUP_CONFIG_FILE, backup_config)
+        
+        # Уведомление
+        if interaction:
+            embed = discord.Embed(
+                title="✅ Резервная копия создана",
+                description=f"Резервная копия успешно сохранена в канале <#{BACKUP_CHANNEL_ID}>",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
+            embed.add_field(name="Backup ID", value=f"`{backup_id}`", inline=True)
+            embed.add_field(name="Типы копий", value="Сжатая + Читаемая + CSV", inline=True)
+            embed.set_footer(text="Восстановить: /restore_backup или /restore_from_text")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        print(f"Резервная копия создана: {backup_msg.id} (ID: {backup_id})")
+        return backup_msg.id
+        
     except Exception as e:
         print(f"Ошибка при создании резервной копии: {e}")
+        if interaction:
+            await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+        return None
+
+async def restore_backup_auto(interaction: discord.Interaction = None, backup_id: str = None):
+    """Автоматически восстанавливает из резервной копии"""
+    try:
+        channel = bot.get_channel(BACKUP_CHANNEL_ID)
+        if not channel:
+            raise Exception("Канал для резервных копий не найден")
+        
+        # Ищем резервную копию
+        backup_msg = None
+        
+        if backup_id:
+            # Ищем по backup_id в сообщениях
+            async for message in channel.history(limit=100):
+                if message.author == bot.user and f"ID: {backup_id}" in message.content:
+                    backup_msg = message
+                    break
+            
+            if not backup_msg:
+                raise Exception(f"Резервная копия с ID {backup_id} не найдена")
+        else:
+            # Ищем последнюю резервную копию
+            async for message in channel.history(limit=50):
+                if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
+                    backup_msg = message
+                    break
+        
+        if not backup_msg:
+            raise Exception("Резервные копии не найдены")
+        
+        # Собираем все части сжатой резервной копии
+        compressed_data = ""
+        async for reply in channel.history(limit=30):
+            if reply.reference and reply.reference.message_id == backup_msg.id:
+                content = reply.content
+                if "СЖАТАЯ КОПИЯ" in content and "```" in content:
+                    # Извлекаем данные из кодового блока
+                    try:
+                        code_block = content.split('```')[1].strip()
+                        compressed_data += code_block
+                    except:
+                        continue
+        
+        if not compressed_data:
+            # Пробуем найти CSV версию
+            csv_data = ""
+            async for reply in channel.history(limit=30):
+                if reply.reference and reply.reference.message_id == backup_msg.id:
+                    content = reply.content
+                    if "CSV КОПИЯ" in content and "```" in content:
+                        try:
+                            code_block = content.split('```')[1].strip()
+                            csv_data += code_block + '\n'
+                        except:
+                            continue
+            
+            if csv_data:
+                # Восстанавливаем из CSV
+                return await restore_from_csv_text(interaction, csv_data, backup_msg.id)
+            else:
+                raise Exception("Не удалось найти сжатые данные резервной копии")
+        
+        # Восстанавливаем из сжатых данных
+        payload = BackupManager.decompress_backup(compressed_data)
+        if not payload:
+            raise Exception("Не удалось декомпрессировать резервную копию")
+        
+        # Сохраняем данные
+        restored_files = 0
+        for name, content in payload.get("data", {}).items():
+            if content:
+                filepath = None
+                if name == "balance":
+                    filepath = BALANCE_FILE
+                elif name == "history":
+                    filepath = HISTORY_FILE
+                elif name == "approval_map":
+                    filepath = APPROVAL_MAP_FILE
+                
+                if filepath:
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    restored_files += 1
+        
+        # Исправляем кодировку
+        fix_json_file_encoding(BALANCE_FILE)
+        fix_json_file_encoding(HISTORY_FILE)
+        fix_json_file_encoding(APPROVAL_MAP_FILE)
+        
+        # Обновляем конфиг
+        backup_config = load_json_file_safe(BACKUP_CONFIG_FILE, {})
+        backup_config["last_restore_time"] = time.time()
+        backup_config["last_restore_from"] = backup_msg.id
+        save_json_file_safe(BACKUP_CONFIG_FILE, backup_config)
+        
+        # Отправляем уведомление
+        if interaction:
+            embed = discord.Embed(
+                title="✅ Данные восстановлены",
+                description=f"Данные успешно восстановлены из резервной копии",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            embed.add_field(name="ID сообщения", value=f"`{backup_msg.id}`", inline=True)
+            embed.add_field(name="Дата создания", value=payload.get("timestamp", "Неизвестно"), inline=True)
+            embed.add_field(name="Восстановлено файлов", value=str(restored_files), inline=True)
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        print(f"Автовосстановление выполнено из {backup_msg.id}")
+        return True
+        
+    except Exception as e:
+        print(f"Ошибка автовосстановления: {e}")
+        if interaction:
+            await interaction.followup.send(f"❌ Ошибка автовосстановления: {str(e)}", ephemeral=True)
         return False
 
+async def restore_from_text(interaction: discord.Interaction, text_data: str):
+    """Восстанавливает из текстового представления"""
+    try:
+        # Проверяем, это CSV формат или читаемый формат
+        if "[BALANCE]" in text_data and "[HISTORY]" in text_data:
+            # CSV формат
+            return await restore_from_csv_text(interaction, text_data, "text_input")
+        else:
+            # Читаемый формат
+            return await restore_from_human_text(interaction, text_data)
+        
+    except Exception as e:
+        print(f"Ошибка восстановления из текста: {e}")
+        await interaction.followup.send(f"❌ Ошибка восстановления: {str(e)}", ephemeral=True)
+        return False
+
+async def restore_from_human_text(interaction: discord.Interaction, text_data: str):
+    """Восстанавливает из читаемого текстового формата"""
+    lines = text_data.split('\n')
+    balance_data = {}
+    history_data = {}
+    current_section = None
+    current_user = None
+    
+    for line in lines:
+        line = line.strip()
+        
+        if "БАЛАНСЫ ПОЛЬЗОВАТЕЛЕЙ" in line:
+            current_section = "balance"
+            continue
+        elif "ИСТОРИЯ ТРАНЗАКЦИЙ" in line:
+            current_section = "history"
+            continue
+        elif "КОНЕЦ РЕЗЕРВНОЙ КОПИИ" in line:
+            break
+        
+        if current_section == "balance" and "->" in line:
+            # Формат: ID: 123456789 -> Баланс: 100 скиллов
+            if "ID:" in line and "Баланс:" in line:
+                parts = line.split("->")
+                if len(parts) == 2:
+                    user_id = parts[0].split("ID:")[1].strip()
+                    balance_str = parts[1].split("Баланс:")[1].split("скиллов")[0].strip()
+                    try:
+                        balance_data[user_id] = int(balance_str)
+                    except:
+                        pass
+        
+        elif current_section == "history":
+            if "Пользователь ID:" in line:
+                user_id = line.split("Пользователь ID:")[1].strip()
+                current_user = user_id
+                history_data[user_id] = []
+            elif current_user and line.startswith("  ") and ". " in line:
+                # Формат: "  1. 2024-01-05 14:30:00: +50 скиллов"
+                try:
+                    tx_parts = line.strip().split(". ", 1)
+                    if len(tx_parts) == 2:
+                        tx_info = tx_parts[1]
+                        if ":" in tx_info:
+                            date_part, rest = tx_info.split(":", 1)
+                            if "+" in rest or "-" in rest:
+                                amount_str = ""
+                                for char in rest:
+                                    if char.isdigit() or char in '+-':
+                                        amount_str += char
+                                    elif amount_str and not char.isdigit():
+                                        break
+                                
+                                try:
+                                    amount = int(amount_str)
+                                    transaction = {
+                                        "amount": amount,
+                                        "timestamp": time.time(),
+                                        "datetime": date_part.strip(),
+                                        "balance_after": balance_data.get(current_user, 0) + amount
+                                    }
+                                    history_data[current_user].append(transaction)
+                                except:
+                                    pass
+                except:
+                    pass
+    
+    # Сохраняем данные
+    save_balance(balance_data)
+    save_history(history_data)
+    
+    # Отправляем отчет
+    embed = discord.Embed(
+        title="✅ Восстановление из текста",
+        description="Данные успешно восстановлены из текстовой резервной копии",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    embed.add_field(name="Балансов восстановлено", value=str(len(balance_data)), inline=True)
+    embed.add_field(name="Историй пользователей", value=str(len(history_data)), inline=True)
+    
+    total_transactions = sum(len(txs) for txs in history_data.values())
+    embed.add_field(name="Всего транзакций", value=str(total_transactions), inline=True)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+    return True
+
+async def restore_from_csv_text(interaction: discord.Interaction, csv_data: str, source: str):
+    """Восстанавливает из CSV формата"""
+    try:
+        balance_data = {}
+        history_data = {}
+        
+        lines = csv_data.split('\n')
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            if not line or line.startswith('#'):
+                continue
+            
+            if line == "[BALANCE]":
+                current_section = "balance"
+                continue
+            elif line == "[HISTORY]":
+                current_section = "history"
+                continue
+            
+            if current_section == "balance":
+                parts = line.split(',', 1)
+                if len(parts) == 2:
+                    user_id, balance_str = parts
+                    try:
+                        balance_data[user_id] = int(balance_str)
+                    except:
+                        pass
+            
+            elif current_section == "history":
+                parts = line.split(',', 3)
+                if len(parts) >= 3:
+                    user_id, date_str, amount_str = parts[0], parts[1], parts[2]
+                    reason = parts[3] if len(parts) > 3 else ""
+                    
+                    try:
+                        amount = int(amount_str)
+                        
+                        if user_id not in history_data:
+                            history_data[user_id] = []
+                        
+                        transaction = {
+                            "amount": amount,
+                            "timestamp": time.time(),
+                            "datetime": date_str,
+                            "reason": reason,
+                            "balance_after": balance_data.get(user_id, 0) + amount
+                        }
+                        
+                        history_data[user_id].append(transaction)
+                    except:
+                        pass
+        
+        # Сохраняем данные
+        save_balance(balance_data)
+        save_history(history_data)
+        
+        # Отправляем отчет
+        embed = discord.Embed(
+            title="✅ Восстановление из CSV",
+            description="Данные успешно восстановлены из CSV резервной копии",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        embed.add_field(name="Источник", value=source, inline=True)
+        embed.add_field(name="Балансов восстановлено", value=str(len(balance_data)), inline=True)
+        embed.add_field(name="Историй пользователей", value=str(len(history_data)), inline=True)
+        
+        total_transactions = sum(len(txs) for txs in history_data.values())
+        embed.add_field(name="Всего транзакций", value=str(total_transactions), inline=False)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return True
+        
+    except Exception as e:
+        print(f"Ошибка восстановления из CSV: {e}")
+        raise
+
 def load_json_file_safe(filepath: Path, default=None):
+    """Безопасно загружает JSON файл"""
     if default is None:
         default = {}
     
@@ -130,6 +685,7 @@ def load_json_file_safe(filepath: Path, default=None):
             return default
 
 def save_json_file_safe(filepath: Path, data):
+    """Безопасно сохраняет JSON файл"""
     try:
         with filepath.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -139,86 +695,77 @@ def save_json_file_safe(filepath: Path, data):
         return False
 
 def load_balance() -> Dict[str, int]:
+    """Загружает данные о балансах"""
     return load_json_file_safe(BALANCE_FILE, {})
 
 def save_balance(data: Dict[str, int]):
+    """Сохраняет данные о балансах"""
     try:
-        create_backup()
         save_json_file_safe(BALANCE_FILE, data)
     except Exception as e:
         print(f"Ошибка сохранения баланса: {e}")
 
 def load_history() -> Dict[str, List[Dict]]:
+    """Загружает историю транзакций"""
     return load_json_file_safe(HISTORY_FILE, {})
 
 def save_history(data: Dict[str, List[Dict]]):
+    """Сохраняет историю транзакций"""
     save_json_file_safe(HISTORY_FILE, data)
 
 def load_approval_data():
+    """Загружает данные об одобрениях"""
     return load_json_file_safe(APPROVAL_MAP_FILE, {})
 
 def save_approval_data(data: dict):
+    """Сохраняет данные об одобрениях"""
     save_json_file_safe(APPROVAL_MAP_FILE, data)
 
-def restore_from_backup() -> bool:
-    try:
-        backups = sorted(BACKUP_FOLDER.glob("backup_*"), key=os.path.getmtime)
-        if not backups:
-            print("Резервные копии не найдены")
-            return False
-        
-        latest_backup = backups[-1]
-        print(f"Восстановление из резервной копии: {latest_backup}")
-        
-        for file_name in ["balance.json", "history.json", "approval_map.json"]:
-            backup_file = latest_backup / file_name
-            original_file = DATA_FOLDER / file_name
-            
-            if backup_file.exists():
-                shutil.copy2(backup_file, original_file)
-        
-        fix_json_file_encoding(BALANCE_FILE)
-        fix_json_file_encoding(HISTORY_FILE)
-        fix_json_file_encoding(APPROVAL_MAP_FILE)
-        
-        return True
-    except Exception as e:
-        print(f"Ошибка восстановления из резервной копии: {e}")
-        return False
+def is_admin(user: discord.User | discord.Member) -> bool:
+    """Проверяет, является ли пользователь администратором"""
+    return user.id == ADMIN_USER_ID
 
-def get_data_info() -> Dict[str, any]:
-    info = {
-        "balance_records": 0,
-        "total_history": 0,
-        "backup_count": 0,
-        "last_backup": None,
-        "data_size_mb": 0
-    }
-    
-    balance_data = load_balance()
-    info["balance_records"] = len(balance_data)
-    
-    history_data = load_history()
-    total_transactions = sum(len(transactions) for transactions in history_data.values())
-    info["total_history"] = total_transactions
-    
-    backups = list(BACKUP_FOLDER.glob("backup_*"))
-    info["backup_count"] = len(backups)
-    if backups:
-        latest_backup = max(backups, key=os.path.getmtime)
-        info["last_backup"] = datetime.datetime.fromtimestamp(
-            os.path.getmtime(latest_backup)
-        ).strftime("%Y-%m-%d %H:%M:%S")
-    
-    total_size = 0
-    for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
-        if file.exists():
-            total_size += file.stat().st_size
-    info["data_size_mb"] = round(total_size / (1024 * 1024), 2)
-    
-    return info
+def has_mod_rights(member: discord.Member) -> bool:
+    """Проверяет, есть ли у пользователя права модератора"""
+    return (
+        is_admin(member) or
+        any(role.id == MOD_ROLE_ID for role in member.roles) or
+        any(role.id == SECOND_MOD_ROLE_ID for role in member.roles)
+    )
+
+def has_builder_rights(member: discord.Member) -> bool:
+    """Проверяет, есть ли у пользователя права строителя"""
+    return any(role.id == BUILDER_ROLE_ID for role in member.roles)
+
+async def log_action(
+    guild: discord.Guild,
+    title: str,
+    description: str,
+    user: discord.Member | None = None,
+    color: discord.Color = discord.Color.blurple()
+):
+    """Логирует действия в канал"""
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=discord.utils.utcnow()
+    )
+
+    if user:
+        embed.set_footer(
+            text=f"{user} | ID: {user.id}",
+            icon_url=user.display_avatar.url
+        )
+
+    await channel.send(embed=embed)
 
 def add_transaction(user_id: int, amount: int, message_link: str = "", reason: str = ""):
+    """Добавляет транзакцию в историю"""
     balance_data = load_balance()
     uid = str(user_id)
     balance_data[uid] = balance_data.get(uid, 0) + amount
@@ -246,545 +793,322 @@ def add_transaction(user_id: int, amount: int, message_link: str = "", reason: s
     print(f"Транзакция: {amount:+d} скиллов для {uid} | Причина: {reason[:50]}")
 
 def get_balance(user_id: int) -> int:
+    """Получает баланс пользователя"""
     return load_balance().get(str(user_id), 0)
 
 def get_history(user_id: int, limit: int = 10) -> List[Dict]:
+    """Получает историю транзакций пользователя"""
     uid = str(user_id)
     history_data = load_history()
     if uid not in history_data:
         return []
     return history_data[uid][-limit:]
 
-def export_balance_csv() -> str:
-    balance_data = load_balance()
-    if not balance_data:
-        return "Нет данных для экспорта"
-    
-    csv_lines = ["ID пользователя,Баланс"]
-    
-    sorted_balance = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
-    
-    for user_id, balance in sorted_balance:
-        csv_lines.append(f"{user_id},{balance}")
-    
-    filename = DATA_FOLDER / f"balance_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write("\n".join(csv_lines))
-    
-    return str(filename)
-
-def find_approval_by_custom_id(data: dict, custom_id: str):
-    for msg_id, info in data.items():
-        if info["approve_cid"] == custom_id or info["deny_cid"] == custom_id:
-            return msg_id, info
-    return None, None
-
-def is_valid_url(url: str) -> bool:
-    parsed = urlparse(url)
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-
-def has_mod_rights(member: discord.Member) -> bool:
-    """Проверяет, есть ли у пользователя права модератора"""
-    return (
-        is_admin(member) or
-        any(role.id == MOD_ROLE_ID for role in member.roles) or
-        any(role.id == SECOND_MOD_ROLE_ID for role in member.roles)
-    )
-
-def has_builder_rights(member: discord.Member) -> bool:
-    """Проверяет, есть ли у пользователя права строителя"""
-    return any(role.id == BUILDER_ROLE_ID for role in member.roles)
-
-async def log_action(
-    guild: discord.Guild,
-    title: str,
-    description: str,
-    user: discord.Member | None = None,
-    color: discord.Color = discord.Color.blurple()
-):
-    channel = guild.get_channel(LOG_CHANNEL_ID)
-    if not channel:
-        return
-
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=color,
-        timestamp=discord.utils.utcnow()
-    )
-
-    if user:
-        embed.set_footer(
-            text=f"{user} | ID: {user.id}",
-            icon_url=user.display_avatar.url
-        )
-
-    await channel.send(embed=embed)
-
+# Классы представлений для Discord
 class MemberApprovalView(discord.ui.View):
+    """Представление для одобрения участников"""
     def __init__(self, approve_cid: str, deny_cid: str):
         super().__init__(timeout=None)
-
-        self.approve_btn = discord.ui.Button(
-            label="Подтвердить",
-            style=discord.ButtonStyle.success,
-            custom_id=approve_cid
-        )
-        self.deny_btn = discord.ui.Button(
-            label="Отклонить",
-            style=discord.ButtonStyle.danger,
-            custom_id=deny_cid
-        )
-
-        self.approve_btn.callback = self.approve
-        self.deny_btn.callback = self.deny
-
-        self.add_item(self.approve_btn)
-        self.add_item(self.deny_btn)
-
-    async def _disable(self, interaction):
-        for item in self.children:
-            item.disabled = True
-        await interaction.message.edit(view=self)
-
-    async def approve(self, interaction: discord.Interaction):
-        if not has_mod_rights(interaction.user):
-            return await interaction.response.send_message("Нет прав", ephemeral=True)
-
-        data = load_approval_data()
-        msg_id, info = find_approval_by_custom_id(data, interaction.data["custom_id"])
-        if not info:
-            return await interaction.response.send_message("Уже обработано", ephemeral=True)
-
-        member = interaction.guild.get_member(info["member_id"])
-        role = interaction.guild.get_role(APPROVED_ROLE_ID)
-
-        if member and role:
-            await member.add_roles(role)
-
-        await log_action(
-            interaction.guild,
-            "Участник принят",
-            f"Участник: {member.mention}",
-            user=interaction.user,
-            color=discord.Color.green()
-        )
-
-        data.pop(msg_id, None)
-        save_approval_data(data)
-
-        await self._disable(interaction)
-        await interaction.response.send_message("Принят", ephemeral=True)
-
-    async def deny(self, interaction: discord.Interaction):
-        if not has_mod_rights(interaction.user):
-            return await interaction.response.send_message("Нет прав", ephemeral=True)
-
-        data = load_approval_data()
-        msg_id, info = find_approval_by_custom_id(data, interaction.data["custom_id"])
-
-        member = interaction.guild.get_member(info["member_id"])
-        if member:
-            await member.kick(reason="Отклонён")
-
-        await log_action(
-            interaction.guild,
-            "Участник отклонён",
-            f"ID участника: `{info['member_id']}`",
-            user=interaction.user,
-            color=discord.Color.red()
-        )
-
-        data.pop(msg_id, None)
-        save_approval_data(data)
-        await self._disable(interaction)
+        self.approve_cid = approve_cid
+        self.deny_cid = deny_cid
 
 class HistoryView(discord.ui.View):
-    def __init__(self, user_id: int, user_name: str):
+    """Представление для навигации по истории"""
+    def __init__(self, user_id: int, page: int = 0):
         super().__init__(timeout=60)
         self.user_id = user_id
-        self.user_name = user_name
-        self.page = 0
-        self.transactions_per_page = 5
+        self.page = page
 
-    def get_page_embed(self) -> discord.Embed:
-        history = get_history(self.user_id, limit=50)
-        if not history:
-            return discord.Embed(
-                title=f"История начислений - {self.user_name}",
-                description="Нет данных о транзакциях.",
-                color=discord.Color.blue()
-            )
-        
-        total_pages = (len(history) + self.transactions_per_page - 1) // self.transactions_per_page
-        start_idx = self.page * self.transactions_per_page
-        end_idx = min(start_idx + self.transactions_per_page, len(history))
-        
-        embed = discord.Embed(
-            title=f"История начислений - {self.user_name}",
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        
-        total_amount = sum(t["amount"] for t in history)
-        embed.set_footer(text=f"Страница {self.page + 1}/{total_pages} • Всего получено: {total_amount} скиллов")
-        
-        for i in range(start_idx, end_idx):
-            t = history[-(i+1)]
-            sign = "➕" if t["amount"] > 0 else "➖"
-            amount_text = f"{sign} {abs(t['amount'])} скиллов"
-            
-            description = f"**{amount_text}**\n"
-            description += f"📅 {t['datetime']}\n"
-            if t["reason"]:
-                description += f"📝 {t['reason']}\n"
-            if t["message_link"]:
-                description += f"[Ссылка на сообщение]({t['message_link']})"
-            
-            embed.add_field(
-                name=f"Транзакция #{len(history)-i}",
-                value=description,
-                inline=False
-            )
-        
-        return embed
-
-    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.secondary)
-    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        history = get_history(self.user_id, limit=50)
-        total_pages = (len(history) + self.transactions_per_page - 1) // self.transactions_per_page
-        
-        if self.page > 0:
-            self.page -= 1
-            await interaction.response.edit_message(embed=self.get_page_embed())
-        else:
-            await interaction.response.send_message("Это первая страница", ephemeral=True)
-
-    @discord.ui.button(label="▶️ Вперед", style=discord.ButtonStyle.secondary)
-    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        history = get_history(self.user_id, limit=50)
-        total_pages = (len(history) + self.transactions_per_page - 1) // self.transactions_per_page
-        
-        if self.page < total_pages - 1:
-            self.page += 1
-            await interaction.response.edit_message(embed=self.get_page_embed())
-        else:
-            await interaction.response.send_message("Это последняя страница", ephemeral=True)
-
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            await self.message.edit(view=self)
-
-async def execute_give(interaction: discord.Interaction, 
-                      member: discord.Member, 
-                      amount: int, 
-                      reason: str,
-                      current_balance: int):
-    
-    message_link = ""
-    if interaction.channel:
-        message_link = f"https://discord.com/channels/{interaction.guild.id}/{interaction.channel.id}/{interaction.id}"
-    
-    add_transaction(
-        user_id=member.id,
-        amount=amount,
-        message_link=message_link,
-        reason=reason or f"Выдано администратором {interaction.user.display_name}"
-    )
-    
-    new_balance = get_balance(member.id)
-    
-    embed = discord.Embed(
-        title="✅ Скилкоины успешно выданы",
-        color=discord.Color.green(),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    embed.add_field(name="Администратор", value=interaction.user.mention, inline=True)
-    embed.add_field(name="Получатель", value=member.mention, inline=True)
-    embed.add_field(name="Сумма", value=f"**{'+' if amount > 0 else ''}{amount}** скиллов", inline=True)
-    embed.add_field(name="Было", value=f"{current_balance} скиллов", inline=True)
-    embed.add_field(name="Стало", value=f"{new_balance} скиллов", inline=True)
-    embed.add_field(name="Изменение", value=f"{'+' if amount > 0 else ''}{amount}", inline=True)
-    
-    if reason:
-        embed.add_field(name="📝 Причина", value=reason, inline=False)
-    
-    embed.set_footer(text=f"ID транзакции: {int(time.time())}")
-    
-    await log_action(
-        interaction.guild,
-        "Выдача скилкоинов",
-        f"{interaction.user.mention} → {member.mention}: {amount} скиллов\nПричина: {reason or 'Не указана'}",
-        user=interaction.user,
-        color=discord.Color.green()
-    )
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    try:
-        if amount > 0:
-            title = "💰 Вы получили скилкоины!"
-            color = discord.Color.green()
-        elif amount < 0:
-            title = "⚠️ С вашего счёта списаны скилкоины"
-            color = discord.Color.orange()
-        else:
-            title = "ℹ️ Информация о балансе"
-            color =discord.Color.blue()
-        
-        notify_embed = discord.Embed(
-            title=title,
-            color=color,
-            timestamp=discord.utils.utcnow()
-        )
-        
-        notify_embed.add_field(
-            name="Сумма", 
-            value=f"{'+' if amount > 0 else ''}{amount} скиллов", 
-            inline=True
-        )
-        notify_embed.add_field(
-            name="Текущий баланс", 
-            value=f"{new_balance} скиллов", 
-            inline=True
-        )
-        
-        if reason:
-            notify_embed.add_field(name="Причина", value=reason, inline=False)
-        
-        notify_embed.add_field(name="Администратор", value=interaction.user.mention, inline=False)
-        notify_embed.set_footer(text=f"ID транзакции: {int(time.time())}")
-        
-        await member.send(embed=notify_embed)
-        
-    except discord.Forbidden:
-        await log_action(
-            interaction.guild,
-            "Не удалось отправить уведомление",
-            f"Не удалось отправить ЛС {member.mention} о выдаче скилкоинов",
-            user=interaction.user,
-            color=discord.Color.orange()
-        )
-    except Exception as e:
-        await log_action(
-            interaction.guild,
-            "Ошибка при отправке уведомления",
-            f"Ошибка: {str(e)[:100]}...",
-            user=interaction.user,
-            color=discord.Color.red()
-        )
-
-@bot.tree.command(name="balance", description="Ваш баланс")
+# Discord команды
+@bot.tree.command(name="backup", description="Создать резервную копию (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
-async def balance(interaction: discord.Interaction):
-    bal = get_balance(interaction.user.id)
-    
-    embed = discord.Embed(
-        title="💰 Ваш баланс",
-        description=f"**{bal} скиллов**",
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    embed.set_footer(text=f"ID: {interaction.user.id}")
-    
-    view = discord.ui.View()
-    history_button = discord.ui.Button(
-        label="История начислений",
-        style=discord.ButtonStyle.primary,
-        emoji="📊"
-    )
-    
-    async def history_cb(i: discord.Interaction):
-        history_view = HistoryView(interaction.user.id, interaction.user.display_name)
-        history_embed = history_view.get_page_embed()
-        await i.response.send_message(embed=history_embed, view=history_view, ephemeral=True)
-        history_view.message = await i.original_response()
-    
-    history_button.callback = history_cb
-    view.add_item(history_button)
-    
-    await log_action(
-        interaction.guild,
-        "Проверка баланса",
-        f"{interaction.user.mention}: {bal} скиллов",
-        user=interaction.user
-    )
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-@bot.tree.command(name="top", description="Топ участников по скилкоинам")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def top(interaction: discord.Interaction):
-    balance_data = load_balance()
-    
-    sorted_users = sorted(balance_data.items(), key=lambda x: x[1], reverse=True)
-    
-    embed = discord.Embed(
-        title="🏆 Топ участников по скилкоинам",
-        color=discord.Color.gold(),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    for i, (user_id, balance) in enumerate(sorted_users[:10], 1):
-        member = interaction.guild.get_member(int(user_id))
-        if member:
-            name = member.display_name
-            avatar = member.display_avatar.url if i <= 3 else ""
-        else:
-            name = f"Участник {user_id}"
-            avatar = ""
-        
-        medal = ""
-        if i == 1: medal = "🥇 "
-        elif i == 2: medal = "🥈 "
-        elif i == 3: medal = "🥉 "
-        
-        embed.add_field(
-            name=f"{medal}{i}. {name}",
-            value=f"**{balance}** скиллов",
-            inline=False
-        )
-        
-        if i <= 3 and avatar:
-            if i == 1:
-                embed.set_thumbnail(url=avatar)
-    
-    await log_action(
-        interaction.guild,
-        "Просмотр топа",
-        f"Пользователь: {interaction.user.mention}",
-        user=interaction.user
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="give", description="Выдать скилкоины (админ)")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-@app_commands.describe(
-    member="Участник, которому выдать скилкоины",
-    amount="Количество скиллов (можно отрицательное)",
-    reason="Причина выдачи"
-)
-async def give(interaction: discord.Interaction, 
-              member: discord.Member,
-              amount: int,
-              reason: str = ""):
-    
+async def backup_command(interaction: discord.Interaction):
     if not is_admin(interaction.user):
         await log_action(
             interaction.guild,
-            "Попытка несанкционированного доступа к /give",
-            f"Пользователь {interaction.user.mention} (ID: {interaction.user.id}) попытался использовать команду /give",
+            "Отказ в доступе",
+            "Попытка использовать /backup",
             user=interaction.user,
             color=discord.Color.red()
         )
-        
-        embed = discord.Embed(
-            title="❌ Отказано в доступе",
-            description="Эта команда доступна только администратору.",
+        return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await create_enhanced_backup(interaction)
+
+@bot.tree.command(name="restore_backup", description="Восстановить из резервной копии (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    backup_id="ID резервной копии (оставьте пустым для последней)",
+    message_id="ID сообщения с резервной копией"
+)
+async def restore_backup_command(
+    interaction: discord.Interaction,
+    backup_id: str = None,
+    message_id: str = None
+):
+    if not is_admin(interaction.user):
+        await log_action(
+            interaction.guild,
+            "Отказ в доступе",
+            "Попытка использовать /restore_backup",
+            user=interaction.user,
             color=discord.Color.red()
         )
-        embed.set_footer(text=f"Ваш ID: {interaction.user.id}")
-        
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
+        return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
     
-    if not is_admin(interaction.user) and abs(amount) > 10000:
-        embed = discord.Embed(
-            title="❌ Превышен лимит",
-            description="Слишком большая сумма за одну транзакции.",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="Максимальный лимит", value="10000 скиллов", inline=True)
-        embed.add_field(name="Запрошенная сумма", value=f"{amount} скиллов", inline=True)
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
     
-    if not is_admin(interaction.user) and member.id == interaction.user.id:
-        embed = discord.Embed(
-            title="❌ Некорректный получатель",
-            description="Нельзя выдавать скилкоины самому себе.",
-            color=discord.Color.red()
-        )
-        embed.add_field(
-            name="Используйте", 
-            value="Для изменения своего баланса обратитесь к другому администратору.",
-            inline=False
-        )
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    if member.bot:
-        embed = discord.Embed(
-            title="❌ Некорректный получатель",
-            description="Нельзя выдавать скилкоины ботам.",
-            color=discord.Color.red()
-        )
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    current_balance = get_balance(member.id)
-    
-    if not is_admin(interaction.user) and abs(amount) >= 5000:
-        embed = discord.Embed(
-            title="⚠️ Подтвердите действие",
-            description=f"Вы собираетесь **{'выдать' if amount > 0 else 'списать'} {abs(amount)} скиллов**.",
-            color=discord.Color.gold()
-        )
-        embed.add_field(name="Получатель", value=member.mention, inline=True)
-        embed.add_field(name="Текущий баланс", value=f"{current_balance} скиллов", inline=True)
-        embed.add_field(name="Новый баланс", value=f"{current_balance + amount} скиллов", inline=False)
-        if reason:
-            embed.add_field(name="Причина", value=reason, inline=False)
-        embed.set_footer(text="Это действие будет записано в лог")
-        
-        confirm_view = discord.ui.View(timeout=30)
-        
-        confirm_button = discord.ui.Button(
-            label="✅ Подтвердить",
-            style=discord.ButtonStyle.success
-        )
-        
-        cancel_button = discord.ui.Button(
-            label="❌ Отменить",
-            style=discord.ButtonStyle.danger
-        )
-        
-        async def confirm_callback(i: discord.Interaction):
-            if i.user.id != interaction.user.id:
-                return await i.response.send_message("❌ Только инициатор может подтвердить действие.", ephemeral=True)
+    if message_id:
+        # Восстановление по ID сообщения
+        try:
+            channel = bot.get_channel(BACKUP_CHANNEL_ID)
+            if not channel:
+                raise Exception("Канал не найден")
             
-            await execute_give(i, member, amount, reason, current_balance)
-        
-        async def cancel_callback(i: discord.Interaction):
-            if i.user.id != interaction.user.id:
-                return await i.response.send_message("❌ Только инициатор может отменить действие.", ephemeral=True)
+            backup_msg = await channel.fetch_message(int(message_id))
+            
+            # Собираем сжатые данные
+            compressed_data = ""
+            async for reply in channel.history(limit=30):
+                if reply.reference and reply.reference.message_id == backup_msg.id:
+                    content = reply.content
+                    if "СЖАТАЯ КОПИЯ" in content and "```" in content:
+                        try:
+                            code_block = content.split('```')[1].strip()
+                            compressed_data += code_block
+                        except:
+                            continue
+            
+            if not compressed_data:
+                await interaction.followup.send("❌ Не найдены сжатые данные в этом сообщении", ephemeral=True)
+                return
+            
+            # Восстанавливаем
+            payload = BackupManager.decompress_backup(compressed_data)
+            if not payload:
+                await interaction.followup.send("❌ Не удалось декомпрессировать данные", ephemeral=True)
+                return
+            
+            # Сохраняем данные
+            restored_files = 0
+            for name, content in payload.get("data", {}).items():
+                if content:
+                    filepath = None
+                    if name == "balance":
+                        filepath = BALANCE_FILE
+                    elif name == "history":
+                        filepath = HISTORY_FILE
+                    
+                    if filepath:
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        restored_files += 1
             
             embed = discord.Embed(
-                title="❌ Действие отменено",
-                description="Выдача скилкоинов отменена пользователем.",
-                color=discord.Color.red()
+                title="✅ Восстановлено",
+                description=f"Данные восстановлены из сообщения {message_id}",
+                color=discord.Color.green()
             )
+            embed.add_field(name="Восстановлено файлов", value=str(restored_files), inline=True)
+            embed.add_field(name="Дата копии", value=payload.get("timestamp", "Неизвестно"), inline=True)
             
-            for item in confirm_view.children:
-                item.disabled = True
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
             
-            await i.response.edit_message(embed=embed, view=confirm_view)
-            await log_action(
-                interaction.guild,
-                "Выдача скилкоинов отменена",
-                f"{interaction.user.mention} отменил выдачу {amount} скиллов {member.mention}",
-                user=interaction.user,
-                color=discord.Color.orange()
-            )
-        
-        confirm_button.callback = confirm_callback
-        cancel_button.callback = cancel_callback
-        
-        confirm_view.add_item(confirm_button)
-        confirm_view.add_item(cancel_button)
-        
-        await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
-        return
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            return
     
-    await execute_give(interaction, member, amount, reason, current_balance)
+    # Автоматическое восстановление
+    await restore_backup_auto(interaction, backup_id)
+
+@bot.tree.command(name="restore_from_text", description="Восстановить из текстовой копии (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    text_data="Текст резервной копии (скопируйте из сообщения)",
+    backup_id="ID резервной копии для автоматического извлечения"
+)
+async def restore_from_text_command(
+    interaction: discord.Interaction,
+    text_data: str = None,
+    backup_id: str = None
+):
+    if not is_admin(interaction.user):
+        await log_action(
+            interaction.guild,
+            "Отказ в доступе",
+            "Попытка использовать /restore_from_text",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
+        return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    if backup_id and not text_data:
+        # Извлекаем текст из резервной копии по ID
+        try:
+            channel = bot.get_channel(BACKUP_CHANNEL_ID)
+            if not channel:
+                raise Exception("Канал не найден")
+            
+            # Ищем сообщение с указанным backup_id
+            backup_msg = None
+            async for message in channel.history(limit=100):
+                if message.author == bot.user and f"ID: {backup_id}" in message.content:
+                    backup_msg = message
+                    break
+            
+            if not backup_msg:
+                raise Exception(f"Резервная копия с ID {backup_id} не найдена")
+            
+            # Извлекаем читаемую версию
+            text_data = ""
+            for part in backup_msg.content.split('```'):
+                if "РЕЗЕРВНАЯ КОПИЯ" in part or "БАЛАНСЫ" in part or "ИСТОРИЯ" in part:
+                    text_data += part + '\n'
+            
+            if not text_data:
+                raise Exception("Не удалось извлечь текстовые данные")
+            
+            await restore_from_text(interaction, text_data)
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка извлечения данных: {str(e)}", ephemeral=True)
+            return
+    elif text_data:
+        # Восстанавливаем из предоставленного текста
+        await restore_from_text(interaction, text_data)
+    else:
+        await interaction.followup.send("❌ Необходимо указать либо текст, либо ID резервной копии", ephemeral=True)
+
+@bot.tree.command(name="backup_info", description="Информация о резервных копиях (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def backup_info_command(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await log_action(
+            interaction.guild,
+            "Отказ в доступе",
+            "Попытка использовать /backup_info",
+            user=interaction.user,
+            color=discord.Color.red()
+        )
+        return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
+    
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if not channel:
+        return await interaction.response.send_message("❌ Канал не найден", ephemeral=True)
+    
+    # Собираем информацию о резервных копиях
+    backups = []
+    async for message in channel.history(limit=100):
+        if message.author == bot.user and ("Резервная копия" in message.content or BACKUP_SIGNATURE in message.content):
+            # Извлекаем backup_id из сообщения
+            backup_id = "Неизвестно"
+            if "ID:" in message.content:
+                for line in message.content.split('\n'):
+                    if "ID:" in line:
+                        parts = line.split("ID:")
+                        if len(parts) > 1:
+                            backup_id = parts[1].strip().split()[0]
+            
+            backups.append({
+                "id": message.id,
+                "backup_id": backup_id,
+                "created_at": message.created_at,
+                "has_compressed": False,
+                "has_csv": False
+            })
+    
+    # Проверяем наличие сжатых данных для каждой копии
+    for backup in backups:
+        async for reply in channel.history(limit=20):
+            if reply.reference and reply.reference.message_id == backup["id"]:
+                if "СЖАТАЯ КОПИЯ" in reply.content:
+                    backup["has_compressed"] = True
+                if "CSV КОПИЯ" in reply.content:
+                    backup["has_csv"] = True
+    
+    embed = discord.Embed(
+        title="📊 Информация о резервных копиях",
+        color=discord.Color.blue(),
+        timestamp=discord.utils.utcnow()
+    )
+    
+    if backups:
+        embed.description = f"Найдено резервных копий: {len(backups)}"
+        
+        # Показываем последние 5 копий
+        for backup in backups[:5]:
+            status = []
+            if backup["has_compressed"]:
+                status.append("📦")
+            if backup["has_csv"]:
+                status.append("📄")
+            
+            embed.add_field(
+                name=f"Backup ID: `{backup['backup_id']}`",
+                value=f"Сообщение ID: `{backup['id']}`\n"
+                      f"Дата: {backup['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
+                      f"Форматы: {''.join(status) if status else '❌'}\n"
+                      f"[Ссылка](https://discord.com/channels/{GUILD_ID}/{BACKUP_CHANNEL_ID}/{backup['id']})",
+                inline=False
+            )
+        
+        if len(backups) > 5:
+            embed.set_footer(text=f"И еще {len(backups) - 5} резервных копий...")
+    else:
+        embed.description = "Резервные копии не найдены"
+    
+    # Добавляем кнопки
+    view = discord.ui.View(timeout=180)
+    
+    create_button = discord.ui.Button(
+        label="🔄 Создать новую копию",
+        style=discord.ButtonStyle.primary,
+        custom_id="create_backup"
+    )
+    
+    restore_button = discord.ui.Button(
+        label="♻️ Восстановить последнюю",
+        style=discord.ButtonStyle.success,
+        custom_id="restore_last"
+    )
+    
+    list_button = discord.ui.Button(
+        label="📋 Обновить список",
+        style=discord.ButtonStyle.secondary,
+        custom_id="refresh_list"
+    )
+    
+    async def create_callback(i: discord.Interaction):
+        if not is_admin(i.user):
+            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
+        await i.response.defer(ephemeral=True, thinking=True)
+        await create_enhanced_backup(i)
+    
+    async def restore_callback(i: discord.Interaction):
+        if not is_admin(i.user):
+            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
+        await i.response.defer(ephemeral=True, thinking=True)
+        await restore_backup_auto(i)
+    
+    async def list_callback(i: discord.Interaction):
+        if not is_admin(i.user):
+            return await i.response.send_message("❌ Только для администратора", ephemeral=True)
+        await i.response.defer(ephemeral=True)
+        await backup_info_command(i)
+    
+    create_button.callback = create_callback
+    restore_button.callback = restore_callback
+    list_button.callback = list_callback
+    
+    view.add_item(create_button)
+    view.add_item(restore_button)
+    view.add_item(list_button)
+    
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="data_info", description="Информация о данных (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -799,7 +1123,22 @@ async def data_info(interaction: discord.Interaction):
         )
         return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
     
-    info = get_data_info()
+    balance_data = load_balance()
+    history_data = load_history()
+    
+    total_transactions = sum(len(transactions) for transactions in history_data.values())
+    
+    # Получаем информацию о последней резервной копии
+    backup_config = load_json_file_safe(BACKUP_CONFIG_FILE, {})
+    last_backup_time = backup_config.get("last_backup_time")
+    last_backup_id = backup_config.get("last_backup_id")
+    
+    if last_backup_time:
+        last_backup_str = f"<t:{int(last_backup_time)}:R>"
+        if last_backup_id:
+            last_backup_str += f"\nID: `{last_backup_id}`"
+    else:
+        last_backup_str = "Никогда"
     
     embed = discord.Embed(
         title="📊 Информация о данных",
@@ -809,32 +1148,37 @@ async def data_info(interaction: discord.Interaction):
     
     embed.add_field(
         name="Балансы",
-        value=f"Записей: {info['balance_records']}",
+        value=f"Записей: {len(balance_data)}",
         inline=True
     )
     
     embed.add_field(
         name="История транзакций",
-        value=f"Всего транзакций: {info['total_history']}",
+        value=f"Всего транзакций: {total_transactions}",
         inline=True
     )
     
     embed.add_field(
-        name="Резервные копии",
-        value=f"Количество: {info['backup_count']}",
+        name="Последняя резервная копия",
+        value=last_backup_str,
         inline=True
     )
     
-    if info['last_backup']:
-        embed.add_field(
-            name="Последняя резервная копия",
-            value=info['last_backup'],
-            inline=False
-        )
+    # Размер данных
+    total_size = 0
+    for file in [BALANCE_FILE, HISTORY_FILE, APPROVAL_MAP_FILE]:
+        if file.exists():
+            total_size += file.stat().st_size
     
     embed.add_field(
         name="Размер данных",
-        value=f"{info['data_size_mb']} MB",
+        value=f"{round(total_size / 1024, 2)} KB",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="Канал резервных копий",
+        value=f"<#{BACKUP_CHANNEL_ID}>",
         inline=True
     )
     
@@ -844,327 +1188,132 @@ async def data_info(interaction: discord.Interaction):
         inline=False
     )
     
-    view = discord.ui.View()
+    view = discord.ui.View(timeout=180)
     
     backup_button = discord.ui.Button(
         label="🔄 Создать резервную копию",
-        style=discord.ButtonStyle.primary
+        style=discord.ButtonStyle.primary,
+        custom_id="create_backup_info"
     )
     
     restore_button = discord.ui.Button(
-        label="♻️ Восстановить из резервной копии",
-        style=discord.ButtonStyle.secondary
+        label="♻️ Восстановить данные",
+        style=discord.ButtonStyle.success,
+        custom_id="restore_backup_info"
     )
     
-    export_button = discord.ui.Button(
-        label="📤 Экспорт в CSV",
-        style=discord.ButtonStyle.success
+    backup_info_button = discord.ui.Button(
+        label="📋 Список копий",
+        style=discord.ButtonStyle.secondary,
+        custom_id="backup_list_info"
     )
     
     async def backup_callback(i: discord.Interaction):
         if not is_admin(i.user):
             return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        
-        success = create_backup()
-        if success:
-            await i.response.send_message("✅ Резервная копия создана!", ephemeral=True)
-        else:
-            await i.response.send_message("❌ Ошибка при создании резервной копии", ephemeral=True)
+        await i.response.defer(ephemeral=True, thinking=True)
+        await create_enhanced_backup(i)
     
     async def restore_callback(i: discord.Interaction):
         if not is_admin(i.user):
             return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        
-        confirm_embed = discord.Embed(
-            title="⚠️ Подтвердите восстановление",
-            description="Это действие заменит текущие данные на данные из последней резервной копии.",
-            color=discord.Color.orange()
-        )
-        
-        confirm_view = discord.ui.View(timeout=30)
-        
-        yes_button = discord.ui.Button(label="✅ Да, восстановить", style=discord.ButtonStyle.danger)
-        no_button = discord.ui.Button(label="❌ Нет, отменить", style=discord.ButtonStyle.secondary)
-        
-        async def yes_callback(ii: discord.Interaction):
-            if not is_admin(ii.user):
-                return await ii.response.send_message("❌ Только для администратора", ephemeral=True)
-            
-            success = restore_from_backup()
-            if success:
-                await ii.response.send_message("✅ Данные восстановлены из резервной копии!", ephemeral=True)
-            else:
-                await ii.response.send_message("❌ Ошибка при восстановлении", ephemeral=True)
-        
-        async def no_callback(ii: discord.Interaction):
-            if not is_admin(ii.user):
-                return await ii.response.send_message("❌ Только для администратора", ephemeral=True)
-            
-            await ii.response.send_message("❌ Восстановление отменено", ephemeral=True)
-        
-        yes_button.callback = yes_callback
-        no_button.callback = no_callback
-        
-        confirm_view.add_item(yes_button)
-        confirm_view.add_item(no_button)
-        
-        await i.response.send_message(embed=confirm_embed, view=confirm_view, ephemeral=True)
+        await i.response.defer(ephemeral=True, thinking=True)
+        await restore_backup_auto(i)
     
-    async def export_callback(i: discord.Interaction):
+    async def list_callback(i: discord.Interaction):
         if not is_admin(i.user):
             return await i.response.send_message("❌ Только для администратора", ephemeral=True)
-        
-        filename = export_balance_csv()
-        if "Нет данных" in filename:
-            await i.response.send_message("❌ Нет данных для экспорта", ephemeral=True)
-        else:
-            await i.response.send_message(f"✅ Данные экспортированы в: `{filename}`", ephemeral=True)
+        await backup_info_command(i)
     
     backup_button.callback = backup_callback
     restore_button.callback = restore_callback
-    export_button.callback = export_callback
+    backup_info_button.callback = list_callback
     
     view.add_item(backup_button)
     view.add_item(restore_button)
-    view.add_item(export_button)
+    view.add_item(backup_info_button)
     
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-class BuildRatingModal(discord.ui.Modal, title="Оценка постройки"):
-    builder_nick = discord.ui.TextInput(label="Ник строителя")
-    build_description = discord.ui.TextInput(
-        label="Описание постройки", 
-        style=discord.TextStyle.paragraph
-    )
-    image_links = discord.ui.TextInput(
-        label="Ссылки на скриншоты/видео", 
-        style=discord.TextStyle.paragraph,
-        required=False
-    )
+# Автоматические задачи
+@tasks.loop(hours=6)
+async def auto_backup_task():
+    """Автоматическое создание резервной копии каждые 6 часов"""
+    try:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Запуск автоматического резервного копирования...")
+        await create_enhanced_backup()
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Автоматическое резервное копирование завершено")
+    except Exception as e:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Ошибка автоматического резервного копирования: {e}")
 
-    async def on_submit(self, interaction: discord.Interaction):
-        description_lower = self.build_description.value.lower()
+@tasks.loop(minutes=30)
+async def check_data_integrity():
+    """Проверка целостности данных"""
+    try:
+        balance_data = load_balance()
         
-        base_score = 500
-        if len(self.build_description.value) > 200:
-            base_score += 100
-        if "крупн" in description_lower or "больш" in description_lower:
-            base_score += 200
-        if "детал" in description_lower or "прорабо" in description_lower:
-            base_score += 150
-        if "уникальн" in description_lower or "оригинальн" in description_lower:
-            base_score += 200
-        if self.image_links.value:
-            base_score += 100
-            
-        final_score = min(base_score, 1500)
-        
-        builder_member = None
-        for member in interaction.guild.members:
-            if (self.builder_nick.value.lower() in member.display_name.lower() or 
-                self.builder_nick.value.lower() in member.name.lower()):
-                builder_member = member
-                break
-        
-        embed = discord.Embed(
-            title="🏗️ Оценка постройки",
-            color=discord.Color.dark_green()
-        )
-        
-        if builder_member:
-            embed.add_field(name="Строитель", value=builder_member.mention, inline=True)
-            builder_id = builder_member.id
-            builder_name = builder_member.display_name
-        else:
-            embed.add_field(name="Строитель", value=self.builder_nick.value, inline=True)
-            builder_id = interaction.user.id
-            builder_name = self.builder_nick.value
-        
-        embed.add_field(name="Оценка", value=f"**{final_score}** скиллов", inline=True)
-        embed.add_field(name="Описание", value=self.build_description.value, inline=False)
-        
-        if self.image_links.value:
-            links = [link.strip() for link in self.image_links.value.splitlines() if is_valid_url(link.strip())]
-            if links:
-                embed.add_field(name="Материалы", value=f"{len(links)} прикреплено", inline=False)
-        
-        embed.set_footer(text="Автоматическая оценка")
-        
-        view = discord.ui.View()
-        
-        confirm_button = discord.ui.Button(
-            label=f"Подтвердить ({final_score} скиллов)",
-            style=discord.ButtonStyle.success
-        )
-        
-        async def confirm_cb(i: discord.Interaction):
-            if not has_mod_rights(i.user) and not is_admin(i.user):
-                return await i.response.send_message("Куда лезем А?", ephemeral=True)
-            
-            message_link = ""
-            if i.channel:
-                message_link = f"https://discord.com/channels/{i.guild.id}/{i.channel.id}/{i.message.id}"
-            
-            add_transaction(
-                user_id=builder_id,
-                amount=final_score,
-                message_link=message_link,
-                reason=f"Оценка постройки: {self.build_description.value[:100]}..."
-            )
-            
-            new_balance = get_balance(builder_id)
-            
-            success_embed = discord.Embed(
-                title="✅ Начисление подтверждено",
-                color=discord.Color.green()
-            )
-            success_embed.add_field(name="Строитель", value=builder_name, inline=True)
-            success_embed.add_field(name="Начислено", value=f"{final_score} скиллов", inline=True)
-            success_embed.add_field(name="Новый баланс", value=f"{new_balance} скиллов", inline=True)
-            success_embed.add_field(name="Проверил", value=i.user.mention, inline=False)
-            
-            await log_action(
-                i.guild,
-                "Оценка постройки",
-                f"{i.user.mention} начислил {final_score} скиллов за постройку",
-                user=i.user,
-                color=discord.Color.green()
-            )
-            
-            for item in view.children:
-                item.disabled = True
-            await i.message.edit(embed=success_embed, view=view)
-            await i.response.send_message(f"✅ Начислено {final_score} скиллов {builder_name}", ephemeral=True)
-        
-        confirm_button.callback = confirm_cb
-        view.add_item(confirm_button)
-        
-        adjust_button = discord.ui.Button(
-            label="Изменить сумму",
-            style=discord.ButtonStyle.primary
-        )
-        
-        async def adjust_cb(i: discord.Interaction):
-            if not has_mod_rights(i.user) and not is_admin(i.user):
-                return await i.response.send_message("Руку убрал", ephemeral=True)
-            
-            modal = discord.ui.Modal(title="Корректировка суммы")
-            modal.add_item(discord.ui.TextInput(
-                label="Новая сумма",
-                default=str(final_score)
-            ))
-            
-            async def modal_submit(m_interaction: discord.Interaction):
-                try:
-                    new_amount = int(m_interaction.data["components"][0]["components"][0]["value"])
-                    if not is_admin(m_interaction.user) and abs(new_amount) > 5000:
-                        return await m_interaction.response.send_message(
-                            "❌ Максимум 5000 скиллов",
-                            ephemeral=True
-                        )
-                    
-                    embed.set_field_at(
-                        1,
-                        name="Оценка",
-                        value=f"**{new_amount}** скиллов (скорректировано)",
-                        inline=True
-                    )
-                    
-                    for item in view.children:
-                        if isinstance(item, discord.ui.Button) and item.label.startswith("Подтвердить"):
-                            item.label = f"Подтвердить ({new_amount} скиллов)"
-                    
-                    await m_interaction.response.edit_message(embed=embed, view=view)
-                    
-                except ValueError:
-                    await m_interaction.response.send_message("❌ Введите число", ephemeral=True)
-            
-            modal.on_submit = modal_submit
-            await i.response.send_modal(modal)
-        
-        adjust_button.callback = adjust_cb
-        view.add_item(adjust_button)
-        
-        await interaction.response.send_message(embed=embed, view=view)
-
-@bot.tree.command(name="rate_build", description="Оценить постройку")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def rate_build(interaction: discord.Interaction):
-    if not has_builder_rights(interaction.user) and not is_admin(interaction.user):
-        await log_action(
-            interaction.guild,
-            "Отказ в доступе",
-            "Попытка использовать /rate_build",
-            user=interaction.user,
-            color=discord.Color.red()
-        )
-        return await interaction.response.send_message("❌ Только для строителей", ephemeral=True)
-    
-    await interaction.response.send_modal(BuildRatingModal())
-
-@bot.tree.command(name="commands", description="Список всех команд (админ)")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-async def commands_list(interaction: discord.Interaction):
-    if not is_admin(interaction.user):
-        await log_action(
-            interaction.guild,
-            "Отказ в доступе",
-            "Попытка использовать /commands",
-            user=interaction.user,
-            color=discord.Color.red()
-        )
-        return await interaction.response.send_message("❌ Доступно только администратору", ephemeral=True)
-    
-    embed = discord.Embed(
-        title="📋 Список команд бота",
-        description="Все доступные команды для администратора",
-        color=discord.Color.purple(),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    embed.add_field(
-        name="👑 Только для администратора",
-        value="""**/give** - Выдать скилкоины (без ограничений)
-**/data_info** - Информация о данных
-**/commands** - Этот список команд""",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="👷 Для строителей и администратора",
-        value="**/rate_build** - Оценить постройку",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="👤 Для всех участников",
-        value="""**/balance** - Проверить баланс
-**/top** - Топ участников по скилкоинам""",
-        inline=False
-    )
-    
-    embed.set_footer(text=f"Администратор: {interaction.user.display_name}")
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not balance_data:
+            print("Данные не найдены. Попытка автовосстановления...")
+            try:
+                await restore_backup_auto()
+                print("Данные восстановлены автоматически")
+            except Exception as e:
+                print(f"Не удалось восстановить данные: {e}")
+    except Exception as e:
+        print(f"Ошибка проверки целостности данных: {e}")
 
 @bot.event
 async def on_ready():
+    """Событие при запуске бота"""
     try:
-        if not list(BACKUP_FOLDER.glob("backup_*")):
-            print("Создаем начальную резервную копию...")
-            create_backup()
-        
         await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f"Бот запущен как {bot.user}")
+        print(f"✅ Бот запущен как {bot.user}")
+        print(f"🆔 ID бота: {bot.user.id}")
+        print(f"🏰 Сервер ID: {GUILD_ID}")
+        print(f"📁 Папка данных: {DATA_FOLDER.absolute()}")
         
-        info = get_data_info()
-        print(f"Загружено записей баланса: {info['balance_records']}")
-        print(f"Всего транзакций: {info['total_history']}")
-        print(f"Резервных копий: {info['backup_count']}")
-        print(f"Путь к данным: {DATA_FOLDER.absolute()}")
+        # Проверяем и восстанавливаем данные при запуске
+        print("🔍 Проверка данных...")
+        balance_data = load_balance()
         
-        bot.add_view(MemberApprovalView("approve_temp", "deny_temp"))
+        if not balance_data:
+            print("⚠️  Данные не найдены. Попытка автовосстановления...")
+            try:
+                success = await restore_backup_auto()
+                if success:
+                    print("✅ Автовосстановление выполнено успешно")
+                else:
+                    print("❌ Автовосстановление не удалось")
+            except Exception as e:
+                print(f"❌ Ошибка автовосстановления: {e}")
+        else:
+            print(f"✅ Данные загружены: {len(balance_data)} записей баланса")
+            
+            history_data = load_history()
+            total_transactions = sum(len(transactions) for transactions in history_data.values())
+            print(f"📊 Всего транзакций: {total_transactions}")
+        
+        # Запускаем автоматические задачи
+        auto_backup_task.start()
+        check_data_integrity.start()
+        
+        print("🔄 Автоматические задачи запущены:")
+        print("   • Резервное копирование: каждые 6 часов")
+        print("   • Проверка целостности: каждые 30 минут")
+        print("🤖 Бот готов к работе!")
+        
     except Exception as e:
-        print(f"Ошибка в on_ready: {e}")
+        print(f"❌ Критическая ошибка в on_ready: {e}")
+        import traceback
+        traceback.print_exc()
 
-bot.run(TOKEN)
+@bot.event
+async def setup_hook():
+    """Настройка при запуске"""
+    print("🔧 Настройка бота...")
+    # Здесь можно добавить дополнительную настройку
+
+# Запуск бота
+if __name__ == "__main__":
+    print("🚀 Запуск бота...")
+    bot.run(TOKEN)
