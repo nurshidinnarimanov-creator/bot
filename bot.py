@@ -77,7 +77,7 @@ BACKUP_CONFIG_FILE = DATA_FOLDER / "backup_config.json"
 MONTHLY_RESET_TRACKER_FILE = DATA_FOLDER / "monthly_reset_tracker.json"
 BUILD_SUBMISSIONS_FILE = DATA_FOLDER / "build_submissions.json"
 
-BACKUP_SIGNATURE = "SKILL_BOT_BACKUP_V2"
+BACKUP_SIGNATURE = "ashra_team_BOT_BACKUP_V2"
 
 def fix_json_file_encoding(filepath: Path):
     """Исправляет кодировку JSON файлов"""
@@ -706,7 +706,7 @@ class BackupManager:
             "signature": BACKUP_SIGNATURE,
             "version": "2.0",
             "timestamp": datetime.datetime.now().isoformat(),
-            "created_by": "skill_bot",
+            "created_by": "ashra_team_bot",
             "data": {}
         }
         
@@ -784,7 +784,7 @@ class BackupManager:
         
         output = [
             "=" * 60,
-            "РЕЗЕРВНАЯ КОПИЯ SKILL БОТА",
+            "РЕЗЕРВНАЯ КОПИЯ ashra_team БОТА",
             f"Дата создания: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
             f"Сигнатура: {BACKUP_SIGNATURE}",
             "=" * 60,
@@ -832,7 +832,7 @@ class BackupManager:
         history_data = load_history()
         
         lines = [
-            "# SKILL BOT BACKUP DATA",
+            "# ashra_team BOT BACKUP DATA",
             f"# Generated: {datetime.datetime.now().isoformat()}",
             f"# Signature: {BACKUP_SIGNATURE}",
             "",
@@ -889,7 +889,7 @@ async def create_enhanced_backup(interaction: discord.Interaction = None):
         
         backup_msg = await safe_send_message(
             channel,
-            f"**📦 РЕЗЕРВНАЯ КОПИЯ SKILL БОТА**\n"
+            f"**📦 РЕЗЕРВНАЯ КОПИЯ ashra_team БОТА**\n"
             f"```\n"
             f"ID: {backup_id}\n"
             f"Дата: {timestamp}\n"
@@ -3408,7 +3408,7 @@ async def my_builds_command(
 async def help_command(interaction: discord.Interaction):
     try:
         embed = discord.Embed(
-            title="📚 Помощь по командам Skill бота",
+            title="📚 Помощь по командам ashra_team бота",
             description="Все доступные команды:",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
