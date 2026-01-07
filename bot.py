@@ -3402,6 +3402,549 @@ async def my_builds_command(
             ephemeral=True
         )
 
+@bot.tree.command(name="test_monthly_report", description="Протестировать ежемесячный отчет (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def test_monthly_report_command(interaction: discord.Interaction):
+    """Команда для тестирования ежемесячного отчета без реального обнуления"""
+    try:
+        if not is_admin(interaction.user):
+            await interaction.response.send_message(
+                "❌ Только администратор может использовать эту команду",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Создаем тестовые данные
+        now = datetime.datetime.now()
+        
+        # Получаем реальный канал для отчетов
+        report_channel = await safe_fetch_channel(MONTHLY_REPORT_CHANNEL_ID)
+        if not report_channel:
+            await interaction.followup.send(
+                f"❌ Канал для отчетов не найден (ID: {MONTHLY_REPORT_CHANNEL_ID})",
+                ephemeral=True
+            )
+            return
+        
+        # Создаем тестовый embed
+        test_embed = discord.Embed(
+            title="🧪 ТЕСТОВЫЙ ЕЖЕМЕСЯЧНЫЙ ОТЧЕТ",
+            description=f"**Это тестовая версия отчета. Реальные данные не изменены!**\n\n"
+                       f"**Месяц: {now.strftime('%B %Y')}**\n"
+                       f"**Дата теста: {now.strftime('%d.%m.%Y %H:%M')}**\n\n"
+                       f"Дорогие строители! Вот и подошел к концу очередной месяц вашего творчества и усердного труда. "
+                       f"Это тестовая версия ежемесячного отчета для проверки функционала.",
+            color=discord.Color.purple(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Получаем реальные данные для теста
+        balance_data = load_balance()
+        if not balance_data:
+            await interaction.followup.send(
+                "❌ Нет данных балансов для теста",
+                ephemeral=True
+            )
+            return
+        
+        # Считаем статистику
+        total_skils = 0
+        users_with_balance = 0
+        
+        for user_id, balance in balance_data.items():
+            if int(user_id) == ADMIN_USER_ID:
+                continue  # Пропускаем админа
+            
+            if balance > 0:
+                total_skils += balance
+                users_with_balance += 1
+        
+        # Добавляем статистику
+        test_embed.add_field(
+            name="📊 Реальная статистика (не обнулена)",
+            value=f"**Всего скиллов у участников:** {total_skils}\n"
+                  f"**Участников с балансом >0:** {users_with_balance}\n"
+                  f"**Всего записей в базе:** {len(balance_data)}",
+            inline=False
+        )
+        
+        # Пример топ участников
+        test_embed.add_field(
+            name="🏆 Пример топ участников",
+            value="🥇 @Игрок1 - 1,500 скиллов\n"
+                  "🥈 @Строитель - 1,200 скиллов\n"
+                  "🥉 @Архитектор - 900 скиллов\n"
+                  "4️⃣ @Дизайнер - 750 скиллов\n"
+                  "5️⃣ @Крафтер - 600 скиллов",
+            inline=False
+        )
+        
+        test_embed.add_field(
+            name="ℹ️ Информация о тесте",
+            value="Это тестовая версия отчета. Для реального обнуления используйте:\n"
+                  "• `/force_monthly_reset confirm:ПОДТВЕРЖДАЮ`\n"
+                  "• Или дождитесь автоматического обнуления 26-27 числа",
+            inline=False
+        )
+        
+        test_embed.set_footer(text="Тестовый отчет | Реальные данные не изменены")
+        
+        # Отправляем тестовый отчет
+        test_message = await safe_send_message(report_channel, embed=test_embed)
+        
+        # Создаем второй embed с деталями
+        details_embed = discord.Embed(
+            title="📋 Пример детализированного отчета",
+            description="Так будет выглядеть детальная информация об участниках:",
+            color=discord.Color.blue()
+        )
+        
+        # Примеры построек с ссылками
+        details_embed.add_field(
+            name="1. Игрок1",
+            value="**Баланс:** 1,500 скиллов\n"
+                  "**Построек за месяц:** 5\n"
+                  "**Последние постройки:**\n"
+                  "• [Замок от 25.11.2024](https://discord.com/channels/1423020585881043016/1457805453127057428/123456789)\n"
+                  "• [Ферма от 20.11.2024](https://discord.com/channels/1423020585881043016/1457805453127057428/123456790)",
+            inline=False
+        )
+        
+        details_embed.add_field(
+            name="2. Строитель",
+            value="**Баланс:** 1,200 скиллов\n"
+                  "**Построек за месяц:** 4\n"
+                  "**Последние постройки:**\n"
+                  "• [Мост от 23.11.2024](https://discord.com/channels/1423020585881043016/1457805453127057428/123456791)\n"
+                  "• [Деревня от 18.11.2024](https://discord.com/channels/1423020585881043016/1457805453127057428/123456792)",
+            inline=False
+        )
+        
+        details_embed.set_footer(text="Это примеры данных")
+        
+        await safe_send_message(report_channel, embed=details_embed)
+        
+        # Уведомляем админа в личные сообщения (тест)
+        try:
+            admin_test_embed = discord.Embed(
+                title="🧪 ТЕСТ ЕЖЕМЕСЯЧНОГО ОТЧЕТА",
+                description="Тестовый отчет был отправлен в канал для отчетов.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            admin_test_embed.add_field(
+                name="📊 Реальная статистика",
+                value=f"Всего скиллов в системе: **{total_skils}**\n"
+                      f"Участников с балансом: **{users_with_balance}**",
+                inline=False
+            )
+            
+            admin_test_embed.add_field(
+                name="🔗 Ссылки на тестовые отчеты",
+                value=f"[Основной отчет](https://discord.com/channels/{GUILD_ID}/{MONTHLY_REPORT_CHANNEL_ID}/{test_message.id})\n"
+                      f"Канал: <#{MONTHLY_REPORT_CHANNEL_ID}>",
+                inline=False
+            )
+            
+            admin_test_embed.add_field(
+                name="📅 Следующее обнуление",
+                value=f"Автоматически: **26-27 число каждого месяца**\n"
+                      f"Принудительно: `/force_monthly_reset`",
+                inline=False
+            )
+            
+            admin_test_embed.set_footer(text="Это тестовое уведомление")
+            
+            await interaction.user.send(embed=admin_test_embed)
+        except:
+            pass  # Если не удалось отправить DM
+        
+        # Подтверждение в канале
+        success_embed = discord.Embed(
+            title="✅ Тестовый отчет создан",
+            description=f"Тестовые отчеты отправлены в канал <#{MONTHLY_REPORT_CHANNEL_ID}>",
+            color=discord.Color.green()
+        )
+        
+        success_embed.add_field(
+            name="Что было создано:",
+            value="1. 🧪 Тестовый основной отчет\n"
+                  "2. 📋 Пример детализированного отчета\n"
+                  "3. 📨 Тестовое уведомление админу (в ЛС)",
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="Следующие шаги:",
+            value="• Проверьте канал для отчетов\n"
+                  "• Убедитесь, что всё отображается корректно\n"
+                  "• Для реального обнуления используйте `/force_monthly_reset`",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=success_embed, ephemeral=True)
+        
+        print(f"Тестовый отчет создан админом {interaction.user.id}")
+        
+    except Exception as e:
+        print(f"Ошибка в команде test_monthly_report: {e}")
+        await interaction.followup.send(
+            f"❌ Ошибка при создании тестового отчета: {str(e)}",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="simulate_reset", description="Симуляция ежемесячного обнуления (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+@app_commands.describe(
+    user_count="Количество тестовых участников",
+    max_balance="Максимальный баланс для теста"
+)
+async def simulate_reset_command(
+    interaction: discord.Interaction,
+    user_count: app_commands.Range[int, 1, 50] = 10,
+    max_balance: app_commands.Range[int, 100, 10000] = 2000
+):
+    """Команда для симуляции ежемесячного обнуления с тестовыми данными"""
+    try:
+        if not is_admin(interaction.user):
+            await interaction.response.send_message(
+                "❌ Только администратор может использовать эту команду",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Создаем тестовые данные
+        now = datetime.datetime.now()
+        
+        # Получаем реальный канал для отчетов
+        report_channel = await safe_fetch_channel(MONTHLY_REPORT_CHANNEL_ID)
+        if not report_channel:
+            await interaction.followup.send(
+                f"❌ Канал для отчетов не найден (ID: {MONTHLY_REPORT_CHANNEL_ID})",
+                ephemeral=True
+            )
+            return
+        
+        # Создаем симуляционный отчет
+        simulation_embed = discord.Embed(
+            title="🎮 СИМУЛЯЦИЯ ЕЖЕМЕСЯЧНОГО ОБНУЛЕНИЯ",
+            description=f"**Тестовая симуляция с {user_count} участниками**\n\n"
+                       f"**Дата симуляции:** {now.strftime('%d.%m.%Y %H:%M')}\n"
+                       f"**Максимальный баланс:** {max_balance} скиллов\n\n"
+                       f"Эта симуляция показывает, как будет выглядеть реальный отчет.",
+            color=discord.Color.dark_purple(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Генерируем тестовых участников
+        test_users = []
+        total_skils_reset = 0
+        
+        for i in range(1, user_count + 1):
+            # Случайный баланс
+            balance = random.randint(100, max_balance)
+            total_skils_reset += balance
+            
+            # Случайное количество построек
+            builds_count = random.randint(1, 8)
+            
+            # Генерируем ссылки на постройки
+            builds_links = []
+            for j in range(min(builds_count, 3)):  # Максимум 3 ссылки
+                message_id = random.randint(1000000000000000000, 9999999999999999999)
+                builds_links.append(
+                    f"[Постройка #{j+1}](https://discord.com/channels/{GUILD_ID}/{APPROVAL_CHANNEL_ID}/{message_id})"
+                )
+            
+            test_users.append({
+                "user_name": f"ТестовыйУчастник{i}",
+                "user_mention": f"<@{1000000000 + i}>",
+                "balance_reset": balance,
+                "builds_count": builds_count,
+                "builds_links": builds_links
+            })
+        
+        # Сортируем по балансу
+        test_users.sort(key=lambda x: x["balance_reset"], reverse=True)
+        
+        # Добавляем статистику
+        simulation_embed.add_field(
+            name="📈 Симуляционная статистика",
+            value=f"**Симулировано обнуление:** {total_skils_reset} скиллов\n"
+                  f"**Участников в симуляции:** {user_count}\n"
+                  f"**Средний баланс:** {total_skils_reset // user_count} скиллов",
+            inline=False
+        )
+        
+        # Добавляем топ участников из симуляции
+        top_users_text = ""
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        for i, user in enumerate(test_users[:10], 1):
+            medal = medals[i-1] if i <= len(medals) else f"{i}."
+            top_users_text += f"{medal} {user['user_mention']} - **{user['balance_reset']}** скиллов\n"
+        
+        simulation_embed.add_field(
+            name="🏆 Топ симулированных участников",
+            value=top_users_text,
+            inline=False
+        )
+        
+        simulation_embed.add_field(
+            name="⚠️ ВАЖНО",
+            value="Это **СИМУЛЯЦИЯ**! Реальные данные не были:\n"
+                  "• Обнулены\n"
+                  "• Изменены\n"
+                  "• Удалены\n\n"
+                  "Для реального обнуления используйте `/force_monthly_reset`",
+            inline=False
+        )
+        
+        simulation_embed.set_footer(text="Симуляционный отчет | Данные сгенерированы случайно")
+        
+        # Отправляем симуляционный отчет
+        sim_message = await safe_send_message(report_channel, embed=simulation_embed)
+        
+        # Создаем детализированный отчет для симуляции
+        details_embed = discord.Embed(
+            title="📋 Детали симуляции",
+            description="Пример того, как будет выглядеть детальная информация:",
+            color=discord.Color.dark_blue()
+        )
+        
+        # Показываем первые 5 участников детально
+        for i, user in enumerate(test_users[:5], 1):
+            field_value = f"**Баланс (симулирован):** {user['balance_reset']} скиллов\n"
+            field_value += f"**Построек (симулировано):** {user['builds_count']}\n"
+            
+            if user['builds_links']:
+                field_value += "**Примеры ссылок на постройки:**\n"
+                for link in user['builds_links']:
+                    field_value += f"• {link}\n"
+            
+            details_embed.add_field(
+                name=f"{i}. {user['user_name']}",
+                value=field_value,
+                inline=False
+            )
+        
+        details_embed.set_footer(text="Пример сгенерированных данных")
+        
+        await safe_send_message(report_channel, embed=details_embed)
+        
+        # Подтверждение для админа
+        success_embed = discord.Embed(
+            title="✅ Симуляция завершена",
+            description=f"Симуляция ежемесячного отчета создана в канале <#{MONTHLY_REPORT_CHANNEL_ID}>",
+            color=discord.Color.green()
+        )
+        
+        success_embed.add_field(
+            name="Создано:",
+            value=f"• 🎮 Симуляционный отчет ({user_count} участников)\n"
+                  f"• 📋 Детализированная информация\n"
+                  f"• 💰 Сумма скиллов: {total_skils_reset}",
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="Следующие шаги:",
+            value="1. Проверьте отчеты в канале\n"
+                  "2. Убедитесь в корректности отображения\n"
+                  "3. Для реального обнуления:\n"
+                  "   • `/force_monthly_reset confirm:ПОДТВЕРЖДАЮ`",
+            inline=False
+        )
+        
+        success_embed.add_field(
+            name="🔗 Ссылка на симуляцию",
+            value=f"[Перейти к отчету](https://discord.com/channels/{GUILD_ID}/{MONTHLY_REPORT_CHANNEL_ID}/{sim_message.id})",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=success_embed, ephemeral=True)
+        
+        print(f"Симуляция отчета создана админом {interaction.user.id} с {user_count} участниками")
+        
+    except Exception as e:
+        print(f"Ошибка в команде simulate_reset: {e}")
+        await interaction.followup.send(
+            f"❌ Ошибка при симуляции: {str(e)}",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(name="check_reset_readiness", description="Проверить готовность к ежемесячному обнулению (админ)")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def check_reset_readiness_command(interaction: discord.Interaction):
+    """Проверка всех систем перед ежемесячным обнулением"""
+    try:
+        if not is_admin(interaction.user):
+            await interaction.response.send_message(
+                "❌ Только администратор может использовать эту команду",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Проверяем все системы
+        checks = []
+        
+        # 1. Проверка каналов
+        report_channel = await safe_fetch_channel(MONTHLY_REPORT_CHANNEL_ID)
+        approval_channel = await safe_fetch_channel(APPROVAL_CHANNEL_ID)
+        success_channel = await safe_fetch_channel(SUCCESS_CHANNEL_ID)
+        
+        checks.append({
+            "name": "📊 Канал для отчетов",
+            "status": "✅ Доступен" if report_channel else "❌ Не найден",
+            "details": f"ID: {MONTHLY_REPORT_CHANNEL_ID}"
+        })
+        
+        checks.append({
+            "name": "🏗️ Канал проверки построек",
+            "status": "✅ Доступен" if approval_channel else "❌ Не найден",
+            "details": f"ID: {APPROVAL_CHANNEL_ID}"
+        })
+        
+        checks.append({
+            "name": "✅ Канал подтверждений",
+            "status": "✅ Доступен" if success_channel else "❌ Не найден",
+            "details": f"ID: {SUCCESS_CHANNEL_ID}"
+        })
+        
+        # 2. Проверка данных
+        balance_data = load_balance()
+        history_data = load_history()
+        build_submissions = load_build_submissions()
+        
+        checks.append({
+            "name": "💰 Данные балансов",
+            "status": f"✅ {len(balance_data)} записей" if balance_data else "❌ Нет данных",
+            "details": f"Участников: {len(balance_data)}"
+        })
+        
+        checks.append({
+            "name": "📝 История транзакций",
+            "status": f"✅ Данные доступны" if history_data else "❌ Нет данных",
+            "details": f"Пользователей с историей: {len(history_data)}"
+        })
+        
+        checks.append({
+            "name": "🏗️ Данные построек",
+            "status": f"✅ {len(build_submissions.get('submissions', []))} записей" if build_submissions.get('submissions') else "❌ Нет данных",
+            "details": f"Всего построек: {len(build_submissions.get('submissions', []))}"
+        })
+        
+        # 3. Проверка статуса обнуления
+        tracker = load_monthly_reset_tracker()
+        now = datetime.datetime.now()
+        current_month_str = f"{now.year}-{now.month:02d}"
+        
+        reset_status = "✅ Уже выполнен" if tracker.get("last_reset_month") == current_month_str else "⏳ Ожидает"
+        
+        checks.append({
+            "name": "🔄 Статус обнуления",
+            "status": reset_status,
+            "details": f"Текущий месяц: {now.strftime('%B %Y')}"
+        })
+        
+        # 4. Считаем статистику для обнуления
+        total_skils = 0
+        users_to_reset = 0
+        
+        if balance_data:
+            for user_id, balance in balance_data.items():
+                if int(user_id) == ADMIN_USER_ID:
+                    continue
+                
+                if balance > 0:
+                    total_skils += balance
+                    users_to_reset += 1
+        
+        checks.append({
+            "name": "📈 Предстоящее обнуление",
+            "status": f"⏳ {users_to_reset} участников" if users_to_reset > 0 else "✅ Не требуется",
+            "details": f"Будет обнулено: {total_skils} скиллов"
+        })
+        
+        # Создаем embed с результатами проверки
+        readiness_embed = discord.Embed(
+            title="🔍 ПРОВЕРКА ГОТОВНОСТИ К ОБНУЛЕНИЮ",
+            description="Результаты проверки всех систем для ежемесячного обнуления:",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Добавляем результаты проверок
+        for check in checks:
+            readiness_embed.add_field(
+                name=f"{check['status'].split()[0]} {check['name']}",
+                value=f"**Статус:** {check['status']}\n**Детали:** {check['details']}",
+                inline=False
+            )
+        
+        # Добавляем рекомендации
+        recommendations = []
+        
+        if not report_channel:
+            recommendations.append("• Добавьте боту доступ к каналу для отчетов")
+        if not balance_data:
+            recommendations.append("• Создайте резервную копию данных")
+        if users_to_reset == 0:
+            recommendations.append("• Нет участников для обнуления (всё хорошо!)")
+        
+        if recommendations:
+            readiness_embed.add_field(
+                name="💡 Рекомендации",
+                value="\n".join(recommendations),
+                inline=False
+            )
+        
+        # Добавляем информацию о следующем обнулении
+        next_reset_date = datetime.datetime(now.year, now.month, MONTHLY_RESET_DAY, RESET_TIME_HOUR)
+        if now.day > MONTHLY_RESET_DAY:
+            if now.month == 12:
+                next_reset_date = datetime.datetime(now.year + 1, 1, MONTHLY_RESET_DAY, RESET_TIME_HOUR)
+            else:
+                next_reset_date = datetime.datetime(now.year, now.month + 1, MONTHLY_RESET_DAY, RESET_TIME_HOUR)
+        
+        readiness_embed.add_field(
+            name="📅 Следующее обнуление",
+            value=f"**Дата:** {next_reset_date.strftime('%d.%m.%Y %H:%M')}\n"
+                  f"**Через:** {(next_reset_date - now).days} дней",
+            inline=False
+        )
+        
+        readiness_embed.set_footer(text=f"Проверка выполнена: {interaction.user.display_name}")
+        
+        await interaction.followup.send(embed=readiness_embed, ephemeral=True)
+        
+        # Логируем проверку
+        await log_action(
+            interaction.guild,
+            "Проверка готовности к обнулению",
+            f"**Администратор:** {interaction.user.mention}\n"
+            f"**Статус:** Все системы проверены\n"
+            f"**Участников для обнуления:** {users_to_reset}\n"
+            f"**Скиллов к обнулению:** {total_skils}",
+            user=interaction.user,
+            color=discord.Color.blue()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка в команде check_reset_readiness: {e}")
+        await interaction.followup.send(
+            f"❌ Ошибка при проверке готовности: {str(e)}",
+            ephemeral=True
+        )
+
 
 @bot.tree.command(name="help", description="Показать список всех команд")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
