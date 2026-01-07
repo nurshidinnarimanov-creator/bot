@@ -363,60 +363,31 @@ def is_valid_url(url: str) -> bool:
 # ФУНКЦИИ ДЛЯ ЕЖЕМЕСЯЧНОГО ОБНУЛЕНИЯ
 # ==============================================
 
+# Исправленный код для функций ежемесячного обнуления:
+
 def load_monthly_reset_tracker() -> dict:
     """Загружает трекер ежемесячных сбросов"""
-    return load_json_file_safe(MONTHLY_RESET_TRACKER_FILE, {"last_reset_month": None, "reset_history": []})
-
-def save_monthly_reset_tracker(data: dict):
-    """Сохраняет трекер ежемесячных сбросов"""
-    save_json_file_safe(MONTHLY_RESET_TRACKER_FILE, data)
+    data = load_json_file_safe(MONTHLY_RESET_TRACKER_FILE, {})
+    
+    # Гарантируем наличие всех необходимых ключей
+    if "reset_history" not in data:
+        data["reset_history"] = []
+    if "last_reset_month" not in data:
+        data["last_reset_month"] = None
+    
+    return data
 
 def load_build_submissions() -> dict:
     """Загружает данные об отправленных постройках"""
-    return load_json_file_safe(BUILD_SUBMISSIONS_FILE, {"submissions": [], "user_builds": {}})
-
-def save_build_submissions(data: dict):
-    """Сохраняет данные об отправленных постройках"""
-    save_json_file_safe(BUILD_SUBMISSIONS_FILE, data)
-
-def add_build_submission(user_id: int, build_data: dict):
-    """Добавляет информацию о постройке"""
-    try:
-        submissions_data = load_build_submissions()
-        
-        build_entry = {
-            "user_id": str(user_id),
-            "timestamp": time.time(),
-            "datetime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "build_data": build_data
-        }
-        submissions_data["submissions"].append(build_entry)
-        
-        if len(submissions_data["submissions"]) > 1000:
-            submissions_data["submissions"] = submissions_data["submissions"][-1000:]
-        
-        uid = str(user_id)
-        if uid not in submissions_data["user_builds"]:
-            submissions_data["user_builds"][uid] = []
-        
-        submissions_data["user_builds"][uid].append(build_entry)
-        
-        if len(submissions_data["user_builds"][uid]) > 50:
-            submissions_data["user_builds"][uid] = submissions_data["user_builds"][uid][-50:]
-        
-        save_build_submissions(submissions_data)
-    except Exception as e:
-        print(f"Ошибка при добавлении постройки: {e}")
-
-def get_user_builds(user_id: int, limit: int = 20) -> List[dict]:
-    """Получает список построек пользователя"""
-    submissions_data = load_build_submissions()
-    uid = str(user_id)
+    data = load_json_file_safe(BUILD_SUBMISSIONS_FILE, {})
     
-    if uid not in submissions_data["user_builds"]:
-        return []
+    # Гарантируем наличие всех необходимых ключей
+    if "submissions" not in data:
+        data["submissions"] = []
+    if "user_builds" not in data:
+        data["user_builds"] = {}
     
-    return submissions_data["user_builds"][uid][-limit:]
+    return data
 
 async def perform_monthly_reset():
     """Выполняет ежемесячное обнуление балансов"""
@@ -426,15 +397,18 @@ async def perform_monthly_reset():
         now = datetime.datetime.now()
         current_month = now.month
         current_year = now.year
+        current_month_str = f"{current_year}-{current_month:02d}"
         
         tracker = load_monthly_reset_tracker()
         
-        if tracker.get("last_reset_month") == f"{current_year}-{current_month:02d}":
+        # Проверяем, не выполнялся ли уже сброс в этом месяце
+        if tracker.get("last_reset_month") == current_month_str:
             print(f"Сброс за месяц {current_month}/{current_year} уже выполнен")
             return
         
         balance_data = load_balance()
         history_data = load_history()
+        submissions_data = load_build_submissions()  # Загружаем данные о постройках
         
         if not balance_data:
             print("Нет данных балансов для обнуления")
@@ -477,7 +451,7 @@ async def perform_monthly_reset():
                 if user_id == ADMIN_USER_ID:
                     continue
                 
-                # Пропускаем нулевые балансы
+                # Пропускаем нулевые и отрицательные балансы
                 if balance <= 0:
                     continue
                 
@@ -496,15 +470,23 @@ async def perform_monthly_reset():
                     pass
                 
                 # Получаем постройки пользователя за месяц
-                user_builds = get_user_builds(user_id)
+                user_builds = []
+                if submissions_data and "user_builds" in submissions_data:
+                    user_builds_list = submissions_data["user_builds"].get(str(user_id), [])
+                    # Берем только постройки за текущий месяц
+                    for build in user_builds_list:
+                        build_time = datetime.datetime.fromtimestamp(build.get("timestamp", 0))
+                        if build_time.year == current_year and build_time.month == current_month:
+                            user_builds.append(build)
+                
                 builds_links = []
                 
-                for build in user_builds[-5:]:
+                for build in user_builds[-5:]:  # Последние 5 построек
                     build_data = build.get("build_data", {})
                     approval_msg_id = build_data.get("approval_message_id")
                     if approval_msg_id:
                         builds_links.append(
-                            f"[Постройка от {build['datetime'][:10]}](https://discord.com/channels/{GUILD_ID}/{APPROVAL_CHANNEL_ID}/{approval_msg_id})"
+                            f"[Постройка от {build.get('datetime', 'Дата неизвестна')[:10]}](https://discord.com/channels/{GUILD_ID}/{APPROVAL_CHANNEL_ID}/{approval_msg_id})"
                         )
                 
                 # Добавляем в отчет
@@ -514,7 +496,7 @@ async def perform_monthly_reset():
                     "user_name": user_name,
                     "balance_reset": balance,
                     "builds_count": len(user_builds),
-                    "builds_links": builds_links[:3]
+                    "builds_links": builds_links[:3]  # Максимум 3 ссылки
                 }
                 user_reports.append(user_report)
                 
@@ -593,7 +575,7 @@ async def perform_monthly_reset():
             if len(details_embed.fields) > 0:
                 await safe_send_message(report_channel, embed=details_embed)
         
-        # Выполняем обнуление балансов
+        # Выполняем обнуление балансов и обновляем историю
         for user_report in user_reports:
             user_id = user_report["user_id"]
             balance = user_report["balance_reset"]
@@ -627,15 +609,22 @@ async def perform_monthly_reset():
         save_balance(balance_data)
         save_history(history_data)
         
-        # Обновляем трекер сбросов
-        tracker["last_reset_month"] = f"{current_year}-{current_month:02d}"
-        tracker["reset_history"].append({
+        # Обновляем трекер сбросов (гарантируем наличие ключей)
+        tracker["last_reset_month"] = current_month_str
+        
+        # Инициализируем reset_history если его нет
+        if "reset_history" not in tracker:
+            tracker["reset_history"] = []
+        
+        # Добавляем запись о сбросе
+        reset_record = {
             "timestamp": time.time(),
             "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
             "users_reset": users_reset,
             "total_skils_reset": total_skils_reset,
             "report_message_id": report_message.id if report_message else None
-        })
+        }
+        tracker["reset_history"].append(reset_record)
         
         # Ограничиваем историю сбросов
         if len(tracker["reset_history"]) > 24:
@@ -694,23 +683,21 @@ async def perform_monthly_reset():
         import traceback
         traceback.print_exc()
 
-def should_perform_reset() -> bool:
-    """Проверяет, нужно ли выполнять обнуление"""
-    now = datetime.datetime.now()
+# Также исправим функцию get_user_builds:
+def get_user_builds(user_id: int, limit: int = 20) -> List[dict]:
+    """Получает список построек пользователя"""
+    submissions_data = load_build_submissions()
+    uid = str(user_id)
     
-    # Проверяем день месяца (26-27)
-    if now.day not in [MONTHLY_RESET_DAY, MONTHLY_RESET_DAY + 1]:
-        return False
+    # Гарантируем наличие ключа user_builds
+    if "user_builds" not in submissions_data:
+        submissions_data["user_builds"] = {}
+        save_build_submissions(submissions_data)
     
-    # Проверяем время (после указанного часа)
-    if now.hour < RESET_TIME_HOUR:
-        return False
+    if uid not in submissions_data["user_builds"]:
+        return []
     
-    # Проверяем, не выполнялся ли уже сброс в этом месяце
-    tracker = load_monthly_reset_tracker()
-    current_month_str = f"{now.year}-{now.month:02d}"
-    
-    return tracker.get("last_reset_month") != current_month_str
+    return submissions_data["user_builds"][uid][-limit:]
 
 # ==============================================
 # ФУНКЦИИ ДЛЯ ИИ ОЦЕНКИ ПОСТРОЙКИ
