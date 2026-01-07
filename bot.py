@@ -252,6 +252,100 @@ def save_approval_data(data: dict):
     """Сохраняет данные об одобрениях"""
     save_json_file_safe(APPROVAL_MAP_FILE, data)
 
+def load_monthly_reset_tracker() -> dict:
+    """Загружает трекер ежемесячных сбросов"""
+    data = load_json_file_safe(MONTHLY_RESET_TRACKER_FILE, {})
+    
+    # Гарантируем наличие всех необходимых ключей
+    if "reset_history" not in data:
+        data["reset_history"] = []
+    if "last_reset_month" not in data:
+        data["last_reset_month"] = None
+    
+    return data
+
+def save_monthly_reset_tracker(data: dict):
+    """Сохраняет трекер ежемесячных сбросов"""
+    save_json_file_safe(MONTHLY_RESET_TRACKER_FILE, data)
+
+def load_build_submissions() -> dict:
+    """Загружает данные об отправленных постройках"""
+    data = load_json_file_safe(BUILD_SUBMISSIONS_FILE, {})
+    
+    # Гарантируем наличие всех необходимых ключей
+    if "submissions" not in data:
+        data["submissions"] = []
+    if "user_builds" not in data:
+        data["user_builds"] = {}
+    
+    return data
+
+def save_build_submissions(data: dict):
+    """Сохраняет данные об отправленных постройках"""
+    save_json_file_safe(BUILD_SUBMISSIONS_FILE, data)
+
+def add_build_submission(user_id: int, build_data: dict):
+    """Добавляет информацию о постройке"""
+    try:
+        submissions_data = load_build_submissions()
+        uid = str(user_id)
+        
+        # Гарантируем наличие всех необходимых ключей
+        if "submissions" not in submissions_data:
+            submissions_data["submissions"] = []
+        if "user_builds" not in submissions_data:
+            submissions_data["user_builds"] = {}
+        
+        # Добавляем дату и время
+        build_data["datetime"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        build_data["timestamp"] = time.time()
+        
+        # Добавляем в общий список
+        submissions_data["submissions"].append({
+            "user_id": uid,
+            "build_data": build_data,
+            "datetime": build_data["datetime"],
+            "timestamp": build_data["timestamp"]
+        })
+        
+        # Добавляем в список пользователя
+        if uid not in submissions_data["user_builds"]:
+            submissions_data["user_builds"][uid] = []
+        
+        submissions_data["user_builds"][uid].append({
+            "build_data": build_data,
+            "datetime": build_data["datetime"],
+            "timestamp": build_data["timestamp"]
+        })
+        
+        # Ограничиваем историю
+        if len(submissions_data["submissions"]) > 1000:
+            submissions_data["submissions"] = submissions_data["submissions"][-1000:]
+        
+        if len(submissions_data["user_builds"][uid]) > 100:
+            submissions_data["user_builds"][uid] = submissions_data["user_builds"][uid][-100:]
+        
+        save_build_submissions(submissions_data)
+        return True
+    except Exception as e:
+        print(f"Ошибка при добавлении постройки: {e}")
+        return False
+
+def get_user_builds(user_id: int, limit: int = 20) -> List[dict]:
+    """Получает список построек пользователя"""
+    submissions_data = load_build_submissions()
+    uid = str(user_id)
+    
+    # Гарантируем наличие ключа user_builds
+    if "user_builds" not in submissions_data:
+        submissions_data["user_builds"] = {}
+        save_build_submissions(submissions_data)
+    
+    if uid not in submissions_data["user_builds"]:
+        return []
+    
+    return submissions_data["user_builds"][uid][-limit:]
+
 def is_admin(user: discord.User | discord.Member) -> bool:
     """Проверяет, является ли пользователь администратором"""
     return user.id == ADMIN_USER_ID
@@ -359,35 +453,34 @@ def is_valid_url(url: str) -> bool:
     except:
         return False
 
+def should_perform_reset() -> bool:
+    """Проверяет, нужно ли выполнить ежемесячное обнуление"""
+    try:
+        now = datetime.datetime.now()
+        
+        # Проверяем день месяца
+        if now.day != MONTHLY_RESET_DAY:
+            return False
+        
+        # Проверяем время (0:00 - 1:00)
+        if now.hour != RESET_TIME_HOUR:
+            return False
+        
+        # Проверяем, не выполнялся ли уже сброс в этом месяце
+        tracker = load_monthly_reset_tracker()
+        current_month_str = f"{now.year}-{now.month:02d}"
+        
+        if tracker.get("last_reset_month") == current_month_str:
+            return False
+        
+        return True
+    except Exception as e:
+        print(f"Ошибка при проверке необходимости сброса: {e}")
+        return False
+
 # ==============================================
 # ФУНКЦИИ ДЛЯ ЕЖЕМЕСЯЧНОГО ОБНУЛЕНИЯ
 # ==============================================
-
-# Исправленный код для функций ежемесячного обнуления:
-
-def load_monthly_reset_tracker() -> dict:
-    """Загружает трекер ежемесячных сбросов"""
-    data = load_json_file_safe(MONTHLY_RESET_TRACKER_FILE, {})
-    
-    # Гарантируем наличие всех необходимых ключей
-    if "reset_history" not in data:
-        data["reset_history"] = []
-    if "last_reset_month" not in data:
-        data["last_reset_month"] = None
-    
-    return data
-
-def load_build_submissions() -> dict:
-    """Загружает данные об отправленных постройках"""
-    data = load_json_file_safe(BUILD_SUBMISSIONS_FILE, {})
-    
-    # Гарантируем наличие всех необходимых ключей
-    if "submissions" not in data:
-        data["submissions"] = []
-    if "user_builds" not in data:
-        data["user_builds"] = {}
-    
-    return data
 
 async def perform_monthly_reset():
     """Выполняет ежемесячное обнуление балансов"""
@@ -682,22 +775,6 @@ async def perform_monthly_reset():
         print(f"Ошибка при выполнении ежемесячного обнуления: {e}")
         import traceback
         traceback.print_exc()
-
-# Также исправим функцию get_user_builds:
-def get_user_builds(user_id: int, limit: int = 20) -> List[dict]:
-    """Получает список построек пользователя"""
-    submissions_data = load_build_submissions()
-    uid = str(user_id)
-    
-    # Гарантируем наличие ключа user_builds
-    if "user_builds" not in submissions_data:
-        submissions_data["user_builds"] = {}
-        save_build_submissions(submissions_data)
-    
-    if uid not in submissions_data["user_builds"]:
-        return []
-    
-    return submissions_data["user_builds"][uid][-limit:]
 
 # ==============================================
 # ФУНКЦИИ ДЛЯ ИИ ОЦЕНКИ ПОСТРОЙКИ
@@ -1267,7 +1344,16 @@ async def restore_backup_auto(interaction: discord.Interaction = None, backup_id
 async def restore_from_text(interaction: discord.Interaction, text_data: str):
     """Восстанавливает из текстового представления"""
     try:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Убедимся, что ответ еще не отправлен
+        if interaction.response.is_done():
+            # Если ответ уже отправлен, используем followup
+            message = await interaction.followup.send(
+                "⏳ Обработка резервной копии...", 
+                ephemeral=True, 
+                wait=True
+            )
+        else:
+            await interaction.response.defer(ephemeral=True, thinking=True)
         
         # Проверяем формат
         if "[BALANCE]" in text_data and "[HISTORY]" in text_data:
@@ -1277,12 +1363,18 @@ async def restore_from_text(interaction: discord.Interaction, text_data: str):
             # Читаемый формат
             return await restore_from_human_text(interaction, text_data)
         else:
-            await interaction.followup.send("❌ Неизвестный формат резервной копии", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Неизвестный формат резервной копии", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Неизвестный формат резервной копии", ephemeral=True)
             return False
         
     except Exception as e:
         print(f"Ошибка восстановления из текста: {e}")
-        await interaction.followup.send(f"❌ Ошибка восстановления: {str(e)}", ephemeral=True)
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ Ошибка восстановления: {str(e)}", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Ошибка восстановления: {str(e)}", ephemeral=True)
         return False
 
 async def restore_from_human_text(interaction: discord.Interaction, text_data: str):
@@ -2598,44 +2690,14 @@ async def restore_from_text_command(
         )
         return await interaction.response.send_message("❌ Только для администратора", ephemeral=True)
     
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    if not text_data and not backup_id:
+        await interaction.response.send_message(
+            "❌ Укажите текст резервной копии или ID резервной копии",
+            ephemeral=True
+        )
+        return
     
-    if backup_id and not text_data:
-        try:
-            channel = await safe_fetch_channel(BACKUP_CHANNEL_ID)
-            if not channel:
-                raise Exception("Канал не найден")
-            
-            backup_msg = None
-            try:
-                messages = await safe_history_fetch(channel, limit=100)
-                for message in messages:
-                    if message.author == bot.user and f"ID: {backup_id}" in message.content:
-                        backup_msg = message
-                        break
-            except Exception as e:
-                raise Exception(f"Ошибка при поиске резервной копии: {e}")
-            
-            if not backup_msg:
-                raise Exception(f"Резервная копия с ID {backup_id} не найдена")
-            
-            text_data = ""
-            for part in backup_msg.content.split('```'):
-                if "РЕЗЕРВНАЯ КОПИЯ" in part or "БАЛАНСЫ" in part or "ИСТОРИЯ" in part:
-                    text_data += part + '\n'
-            
-            if not text_data:
-                raise Exception("Не удалось извлечь текстовые данные")
-            
-            await restore_from_text(interaction, text_data)
-            
-        except Exception as e:
-            await interaction.followup.send(f"❌ Ошибка извлечения данных: {str(e)}", ephemeral=True)
-            return
-    elif text_data:
-        await restore_from_text(interaction, text_data)
-    else:
-        await interaction.followup.send("❌ Необходимо указать либо текст, либо ID резервной копии", ephemeral=True)
+    await restore_from_text(interaction, text_data or "")
 
 @bot.tree.command(name="backup_info", description="Информация о резервных копиях (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -2780,7 +2842,7 @@ async def backup_info_command(interaction: discord.Interaction):
         await interaction.followup.send("❌ Ошибка при отправке информации", ephemeral=True)
 
 # ==============================================
-# КОМАНДА ДЛЯ ОТПРАВКИ ПОСТРОЙКИ С ИИ ОЦЕНКОЙ
+# КОМАНДА ДЛЯ ОТПРАВКИ ПОСТРОКИ С ИИ ОЦЕНКОЙ
 # ==============================================
 
 @bot.tree.command(name="submit_build", description="Отправить постройку на проверку ИИ")
