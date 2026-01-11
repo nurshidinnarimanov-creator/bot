@@ -3194,6 +3194,7 @@ async def submit_build(
             )
             return
         
+        # Создаем embed для канала проверки
         approval_embed = discord.Embed(
             title="🏗️ Новая постройка на проверку",
             color=discord.Color.blue(),
@@ -3235,6 +3236,7 @@ async def submit_build(
         approval_embed.set_image(url=screenshot_url)
         approval_embed.set_footer(text=f"ID заявки: {int(time.time())}")
         
+        # Создаем embed для канала успеха
         success_embed = discord.Embed(
             title="✅ Постройка отправлена на проверку",
             description=f"**{interaction.user.mention}**, ваша постройка успешно отправлена на оценку!",
@@ -3314,6 +3316,7 @@ async def submit_build(
                 reason=f"Награда за постройку (оценка ИИ: {evaluation_result['ai_score']}/10): {description[:100]}"
             )
             
+            # Обновляем embed в канале проверки
             approval_embed.color = discord.Color.green()
             approval_embed.title = "✅ Постройка подтверждена"
             approval_embed.add_field(
@@ -3327,37 +3330,71 @@ async def submit_build(
                 inline=True
             )
             
-            success_embed.color = discord.Color.green()
-            success_embed.title = "🎉 Постройка одобрена!"
-            success_embed.set_field_at(
-                4,
+            # Создаем новый embed для канала успеха
+            new_success_embed = discord.Embed(
+                title="🎉 Постройка одобрена!",
+                description=f"**{interaction.user.mention}**, ваша постройка была одобрена модератором!",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            new_success_embed.add_field(
+                name="Оценка ИИ",
+                value=f"**{evaluation_result['ai_score']}/10** ✅",
+                inline=True
+            )
+            
+            new_success_embed.add_field(
+                name="Награда",
+                value=f"**{reward}** скиллов 🎉",
+                inline=True
+            )
+            
+            if description:
+                new_success_embed.add_field(
+                    name="Описание постройки",
+                    value=description[:300],
+                    inline=False
+                )
+            
+            new_success_embed.add_field(
+                name="Комментарий ИИ",
+                value=evaluation_result['comment'],
+                inline=False
+            )
+            
+            new_success_embed.add_field(
                 name="Статус",
                 value="✅ Одобрено модератором",
                 inline=True
             )
             
-            success_embed.add_field(
+            new_success_embed.add_field(
                 name="Подтвердил",
                 value=i.user.mention,
                 inline=True
             )
             
-            success_embed.set_footer(text=f"Награда выдана: {reward} скиллов")
+            new_success_embed.set_footer(text=f"Награда выдана: {reward} скиллов")
             
+            # Отключаем все кнопки
             for child in view.children:
                 if isinstance(child, discord.ui.Button):
                     child.disabled = True
             
+            # Обновляем сообщение в канале проверки
             await i.response.edit_message(embed=approval_embed, view=view)
             
+            # Обновляем сообщение в канале успеха
             try:
                 async for message in success_channel.history(limit=50):
                     if message.author == bot.user and str(interaction.user.id) in message.content:
-                        await message.edit(embed=success_embed)
+                        await message.edit(embed=new_success_embed)
                         break
-            except:
-                pass
+            except Exception as e:
+                print(f"Ошибка при обновлении сообщения успеха: {e}")
             
+            # Отправляем уведомление автору
             try:
                 await interaction.user.send(
                     f"🎉 Ваша постройка была одобрена модератором {i.user.mention}!\n"
@@ -3366,8 +3403,9 @@ async def submit_build(
                     f"**Комментарий:** {evaluation_result['comment']}"
                 )
             except:
-                pass
+                pass  # Не отправляем DM если пользователь запретил
             
+            # Логируем действие
             await log_action(
                 i.guild,
                 "Постройка одобрена",
@@ -3390,6 +3428,7 @@ async def submit_build(
                 )
                 return
             
+            # Создаем модальное окно для настройки награды
             modal = discord.ui.Modal(title="Настройка награды")
             
             reward_input = discord.ui.TextInput(
@@ -3416,6 +3455,7 @@ async def submit_build(
                     new_reward = int(reward_input.value)
                     moderator_comment = comment_input.value
                     
+                    # Проверяем диапазон
                     if new_reward < MIN_REWARD or new_reward > MAX_REWARD:
                         await modal_interaction.response.send_message(
                             f"❌ Награда должна быть от {MIN_REWARD} до {MAX_REWARD} скиллов",
@@ -3423,12 +3463,14 @@ async def submit_build(
                         )
                         return
                     
+                    # Выдаем награду
                     add_transaction(
                         interaction.user.id,
                         new_reward,
                         reason=f"Награда за постройку (скорректировано модератором): {description[:100]}"
                     )
                     
+                    # Обновляем embed в канале проверки
                     approval_embed.color = discord.Color.gold()
                     approval_embed.title = "📝 Награда скорректирована"
                     approval_embed.add_field(
@@ -3449,51 +3491,78 @@ async def submit_build(
                             inline=False
                         )
                     
-                    success_embed.color = discord.Color.gold()
-                    success_embed.title = "📝 Награда скорректирована"
-                    success_embed.set_field_at(
-                        1,
+                    # Создаем новый embed для канала успеха
+                    new_success_embed = discord.Embed(
+                        title="📝 Награда скорректирована",
+                        description=f"**{interaction.user.mention}**, награда за вашу постройку была скорректирована модератором.",
+                        color=discord.Color.gold(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    
+                    new_success_embed.add_field(
+                        name="Оценка ИИ",
+                        value=f"**{evaluation_result['ai_score']}/10**",
+                        inline=True
+                    )
+                    
+                    new_success_embed.add_field(
                         name="Награда",
                         value=f"**{new_reward}** скиллов (скорректировано)",
                         inline=True
                     )
                     
-                    success_embed.set_field_at(
-                        4,
+                    if description:
+                        new_success_embed.add_field(
+                            name="Описание постройки",
+                            value=description[:300],
+                            inline=False
+                        )
+                    
+                    new_success_embed.add_field(
+                        name="Комментарий ИИ",
+                        value=evaluation_result['comment'],
+                        inline=False
+                    )
+                    
+                    new_success_embed.add_field(
                         name="Статус",
                         value="📝 Скорректировано модератором",
                         inline=True
                     )
                     
                     if moderator_comment:
-                        success_embed.add_field(
+                        new_success_embed.add_field(
                             name="Комментарий модератора",
                             value=moderator_comment,
                             inline=False
                         )
                     
-                    success_embed.add_field(
+                    new_success_embed.add_field(
                         name="Скорректировал",
                         value=modal_interaction.user.mention,
                         inline=True
                     )
                     
-                    success_embed.set_footer(text=f"Награда выдана: {new_reward} скиллов")
+                    new_success_embed.set_footer(text=f"Награда выдана: {new_reward} скиллов")
                     
+                    # Отключаем все кнопки
                     for child in view.children:
                         if isinstance(child, discord.ui.Button):
                             child.disabled = True
                     
+                    # Обновляем сообщение в канале проверки
                     await modal_interaction.response.edit_message(embed=approval_embed, view=view)
                     
+                    # Обновляем сообщение в канале успеха
                     try:
                         async for message in success_channel.history(limit=50):
                             if message.author == bot.user and str(interaction.user.id) in message.content:
-                                await message.edit(embed=success_embed)
+                                await message.edit(embed=new_success_embed)
                                 break
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Ошибка при обновлении сообщения успеха: {e}")
                     
+                    # Отправляем уведомление автору
                     try:
                         message_text = f"📝 Ваша постройка была проверена модератором {modal_interaction.user.mention}!\n"
                         message_text += f"Награда скорректирована до **{new_reward}** скиллов.\n"
@@ -3505,6 +3574,7 @@ async def submit_build(
                     except:
                         pass
                     
+                    # Логируем действие
                     log_text = f"**Модератор:** {modal_interaction.user.mention}\n"
                     log_text += f"**Автор:** {interaction.user.mention}\n"
                     log_text += f"**Награда:** +{new_reward} скиллов (было: {evaluation_result['reward']})\n"
@@ -3545,6 +3615,7 @@ async def submit_build(
                 )
                 return
             
+            # Спрашиваем причину отказа
             modal = discord.ui.Modal(title="Причина отклонения")
             modal.add_item(
                 discord.ui.TextInput(
@@ -3559,6 +3630,7 @@ async def submit_build(
             async def modal_callback(modal_interaction: discord.Interaction):
                 reason = modal.children[0].value
                 
+                # Обновляем embed в канале проверки
                 approval_embed.color = discord.Color.red()
                 approval_embed.title = "❌ Постройка отклонена"
                 approval_embed.add_field(
@@ -3572,43 +3644,77 @@ async def submit_build(
                     inline=False
                 )
                 
-                success_embed.color = discord.Color.red()
-                success_embed.title = "❌ Постройка отклонена"
-                success_embed.set_field_at(
-                    4,
+                # Создаем новый embed для канала успеха
+                new_success_embed = discord.Embed(
+                    title="❌ Постройка отклонена",
+                    description=f"**{interaction.user.mention}**, ваша постройка была отклонена модератором.",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                
+                new_success_embed.add_field(
+                    name="Оценка ИИ",
+                    value=f"**{evaluation_result['ai_score']}/10**",
+                    inline=True
+                )
+                
+                new_success_embed.add_field(
+                    name="Предполагаемая награда",
+                    value=f"**{evaluation_result['reward']}** скиллов",
+                    inline=True
+                )
+                
+                if description:
+                    new_success_embed.add_field(
+                        name="Описание постройки",
+                        value=description[:300],
+                        inline=False
+                    )
+                
+                new_success_embed.add_field(
+                    name="Комментарий ИИ",
+                    value=evaluation_result['comment'],
+                    inline=False
+                )
+                
+                new_success_embed.add_field(
                     name="Статус",
                     value="❌ Отклонено",
                     inline=True
                 )
                 
-                success_embed.add_field(
-                    name="Причина",
+                new_success_embed.add_field(
+                    name="Причина отказа",
                     value=reason[:200],
                     inline=False
                 )
                 
-                success_embed.add_field(
+                new_success_embed.add_field(
                     name="Отклонил",
                     value=modal_interaction.user.mention,
                     inline=True
                 )
                 
-                success_embed.set_footer(text="Постройка не соответствует требованиям")
+                new_success_embed.set_footer(text="Постройка не соответствует требованиям")
                 
+                # Отключаем все кнопки
                 for child in view.children:
                     if isinstance(child, discord.ui.Button):
                         child.disabled = True
                 
+                # Обновляем сообщение в канале проверки
                 await modal_interaction.response.edit_message(embed=approval_embed, view=view)
                 
+                # Обновляем сообщение в канале успеха
                 try:
                     async for message in success_channel.history(limit=50):
                         if message.author == bot.user and str(interaction.user.id) in message.content:
-                            await message.edit(embed=success_embed)
+                            await message.edit(embed=new_success_embed)
                             break
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Ошибка при обновлении сообщения успеха: {e}")
                 
+                # Отправляем уведомление автору
                 try:
                     await interaction.user.send(
                         f"😔 Ваша постройка была отклонена модератором {modal_interaction.user.mention}.\n"
@@ -3618,6 +3724,7 @@ async def submit_build(
                 except:
                     pass
                 
+                # Логируем действие
                 await log_action(
                     modal_interaction.guild,
                     "Постройка отклонена",
@@ -3635,6 +3742,7 @@ async def submit_build(
             modal.on_submit = modal_callback
             await i.response.send_modal(modal)
         
+        # Привязываем коллбэки к кнопкам
         approve_button.callback = approve_callback
         adjust_button.callback = adjust_callback
         deny_button.callback = deny_callback
@@ -3643,9 +3751,13 @@ async def submit_build(
         view.add_item(adjust_button)
         view.add_item(deny_button)
         
+        # Отправляем embed в канал проверки с кнопками
         approval_message = await safe_send_message(approval_channel, embed=approval_embed, view=view)
+        
+        # Отправляем embed в канал успеха БЕЗ кнопок
         success_message = await safe_send_message(success_channel, embed=success_embed)
         
+        # Отправляем подтверждение пользователю
         confirmation_embed = discord.Embed(
             title="✅ Постройка отправлена!",
             description=f"Ваша постройка отправлена на оценку ИИ и ожидает проверки модератором.",
@@ -3681,6 +3793,7 @@ async def submit_build(
         
         await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
         
+        # Сохраняем информацию о постройке
         build_id = f"build_{timestamp}_{interaction.user.id}"
         build_data = {
             "build_id": build_id,
@@ -3695,6 +3808,7 @@ async def submit_build(
             "status": "pending"
         }
         
+        # Логируем отправку
         await log_action(
             interaction.guild,
             "Новая постройка отправлена",
