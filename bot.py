@@ -127,9 +127,6 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ==============================================
-# БАЗОВЫЕ ФУНКЦИИ
-# ==============================================
 
 async def safe_send_message(channel, content=None, embed=None, view=None, **kwargs):
     """Безопасно отправляет сообщение с обработкой ошибок"""
@@ -353,9 +350,6 @@ def is_valid_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
-# ==============================================
-# ФУНКЦИИ ДЛЯ ИИ ОЦЕНКИ ПОСТРОЙКИ
-# ==============================================
 
 async def evaluate_build_with_ai(screenshot_url: str, description: str) -> Dict[str, Any]:
     """
@@ -427,9 +421,6 @@ async def evaluate_build_random(screenshot_url: str, description: str) -> Dict[s
         "is_ai": False
     }
 
-# ==============================================
-# ФУНКЦИИ ДЛЯ ЕЖЕМЕСЯЧНОГО ОБНУЛЕНИЯ И ОТЧЕТОВ
-# ==============================================
 
 def should_reset_balance() -> bool:
     """Проверяет, нужно ли выполнять обнуление баланса"""
@@ -980,9 +971,6 @@ async def perform_monthly_reset(guild: discord.Guild) -> bool:
         print(f"Ошибка при выполнении ежемесячного обнуления: {e}")
         return False
 
-# ==============================================
-# МЕНЕДЖЕР РЕЗЕРВНОГО КОПИРОВАНИЯ
-# ==============================================
 
 class BackupManager:
     """Менеджер резервного копирования"""
@@ -1542,10 +1530,6 @@ async def restore_from_csv_text(interaction: discord.Interaction, csv_data: str,
         print(f"Ошибка восстановления из CSV: {e}")
         raise
 
-# ==============================================
-# СОБЫТИЕ ПРИ ПОЯВЛЕНИИ НОВОГО УЧАСТНИКА
-# ==============================================
-
 @bot.event
 async def on_member_join(member: discord.Member):
     """Событие при присоединении нового участника"""
@@ -1886,9 +1870,6 @@ async def on_member_join(member: discord.Member):
         import traceback
         traceback.print_exc()
 
-# ==============================================
-# ОСНОВНЫЕ КОМАНДЫ БОТА
-# ==============================================
 
 @bot.tree.command(name="balance", description="Показать ваш баланс скиллов")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -2558,9 +2539,6 @@ async def reset_balance(
             ephemeral=True
         )
 
-# ==============================================
-# КОМАНДЫ ДЛЯ ЕЖЕМЕСЯЧНОГО ОБНУЛЕНИЯ
-# ==============================================
 
 @bot.tree.command(name="force_reset", description="Принудительное обнуление баланса (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -2846,9 +2824,6 @@ async def publish_report(interaction: discord.Interaction, report_id: str = None
             ephemeral=True
         )
 
-# ==============================================
-# КОМАНДЫ РЕЗЕРВНОГО КОПИРОВАНИЯ
-# ==============================================
 
 @bot.tree.command(name="backup", description="Создать резервную копию (админ)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -3154,9 +3129,6 @@ async def backup_info_command(interaction: discord.Interaction):
         print(f"Ошибка при отправке информации о резервных копиях: {e}")
         await interaction.followup.send("❌ Ошибка при отправке информации", ephemeral=True)
 
-# ==============================================
-# КОМАНДА ДЛЯ ОТПРАВКИ ПОСТРОЙКИ С ИИ ОЦЕНКОЙ
-# ==============================================
 
 @bot.tree.command(name="submit_build", description="Отправить постройку на проверку ИИ")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -3835,10 +3807,6 @@ async def submit_build(
                 ephemeral=True
             )
 
-# ==============================================
-# КОМАНДА ДЛЯ ПОВТОРНОЙ ОТПРАВКИ ПРИГЛАШЕНИЯ
-# ==============================================
-
 @bot.tree.command(name="send_welcome", description="Отправить приглашение участнику (модераторы)")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(
@@ -3898,10 +3866,6 @@ async def send_welcome(
             f"❌ Ошибка: {str(e)}",
             ephemeral=True
         )
-
-# ==============================================
-# КОМАНДА ПОМОЩИ
-# ==============================================
 
 @bot.tree.command(name="help", description="Показать список всех команд")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -3979,9 +3943,6 @@ async def help_command(interaction: discord.Interaction):
             ephemeral=True
         )
 
-# ==============================================
-# АВТОМАТИЧЕСКИЕ ЗАДАЧИ И СОБЫТИЯ
-# ==============================================
 
 @tasks.loop(hours=6)
 async def auto_backup_task():
@@ -4082,9 +4043,6 @@ async def check_monthly_reset():
     except Exception as e:
         print(f"Ошибка в задаче проверки обнуления: {e}")
 
-# ==============================================
-# СОБЫТИЕ ПРИ ЗАПУСКЕ БОТА
-# ==============================================
 
 @bot.event
 async def on_ready():
